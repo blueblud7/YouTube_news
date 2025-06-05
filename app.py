@@ -923,6 +923,47 @@ def news_page():
                 else:
                     st.error("키워드 추출에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
         
+        # 직접 키워드 입력 영역
+        st.subheader("키워드 직접 입력")
+        custom_keyword = st.text_input("관심 있는 키워드를 직접 입력하세요 (쉼표로 구분)", placeholder="예: 금리, 인플레이션, 부동산")
+        
+        # 직접 입력한 키워드가 있으면 처리
+        if custom_keyword:
+            # 쉼표로 구분된 키워드를 리스트로 변환
+            custom_keywords = [k.strip() for k in custom_keyword.split(',') if k.strip()]
+            
+            # 직접 입력한 키워드가 있으면 세션에 저장
+            if custom_keywords:
+                if 'custom_keywords' not in st.session_state:
+                    st.session_state.custom_keywords = custom_keywords
+                else:
+                    # 기존 키워드와 병합 (중복 제거)
+                    st.session_state.custom_keywords = list(set(st.session_state.custom_keywords + custom_keywords))
+                
+                # 선택된 키워드 목록에도 추가
+                if 'selected_keywords' not in st.session_state:
+                    st.session_state.selected_keywords = custom_keywords
+                else:
+                    # 기존 선택된 키워드와 병합 (중복 제거)
+                    st.session_state.selected_keywords = list(set(st.session_state.selected_keywords + custom_keywords))
+        
+        # 직접 입력한 키워드 목록 표시
+        if 'custom_keywords' in st.session_state and st.session_state.custom_keywords:
+            st.write("직접 입력한 키워드:")
+            custom_keyword_cols = st.columns(3)
+            for i, keyword in enumerate(st.session_state.custom_keywords):
+                col_index = i % 3
+                with custom_keyword_cols[col_index]:
+                    is_selected = keyword in st.session_state.selected_keywords if 'selected_keywords' in st.session_state else False
+                    if st.checkbox(keyword, value=is_selected, key=f"custom_keyword_{i}"):
+                        if 'selected_keywords' not in st.session_state:
+                            st.session_state.selected_keywords = [keyword]
+                        elif keyword not in st.session_state.selected_keywords:
+                            st.session_state.selected_keywords.append(keyword)
+                    else:
+                        if 'selected_keywords' in st.session_state and keyword in st.session_state.selected_keywords:
+                            st.session_state.selected_keywords.remove(keyword)
+        
         # 세션에 저장된 키워드가 있으면 표시
         if 'extracted_keywords' in st.session_state and st.session_state.extracted_keywords:
             keywords = st.session_state.extracted_keywords
@@ -946,58 +987,62 @@ def news_page():
                         if keyword in st.session_state.selected_keywords:
                             st.session_state.selected_keywords.remove(keyword)
             
-            # 선택된 키워드가 있으면 뉴스 생성 옵션 표시
-            if st.session_state.selected_keywords:
-                st.subheader("뉴스 생성 옵션")
+        # 선택된 키워드가 있으면 뉴스 생성 옵션 표시
+        if 'selected_keywords' in st.session_state and st.session_state.selected_keywords:
+            st.subheader("뉴스 생성 옵션")
+            
+            # 선택된 키워드 표시
+            selected_keywords_str = ", ".join(st.session_state.selected_keywords)
+            st.write(f"**선택된 키워드:** {selected_keywords_str}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                style = st.selectbox(
+                    "리포트 스타일", 
+                    ["basic", "concise", "editorial", "news", "research"],
+                    format_func=lambda x: {
+                        "basic": "기본", 
+                        "concise": "간결", 
+                        "editorial": "사설", 
+                        "news": "신문기사", 
+                        "research": "딥리서치"
+                    }.get(x, x)
+                )
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    style = st.selectbox(
-                        "리포트 스타일", 
-                        ["basic", "concise", "editorial", "news", "research"],
-                        format_func=lambda x: {
-                            "basic": "기본", 
-                            "concise": "간결", 
-                            "editorial": "사설", 
-                            "news": "신문기사", 
-                            "research": "딥리서치"
-                        }.get(x, x)
+                word_count = st.number_input(
+                    "글자수 (자)", 
+                    min_value=500, 
+                    max_value=3000, 
+                    value=1000, 
+                    step=100
+                )
+            
+            with col2:
+                language = st.selectbox(
+                    "언어", 
+                    ["ko", "en"],
+                    format_func=lambda x: {"ko": "한국어", "en": "영어"}.get(x, x)
+                )
+                
+                generate_button = st.button("뉴스 생성", key="generate_by_keywords")
+            
+            if generate_button:
+                with st.spinner(f"선택한 키워드 '{', '.join(st.session_state.selected_keywords)}'에 대한 뉴스를 생성하는 중..."):
+                    from db_handler import generate_news_by_keywords
+                    news_article = generate_news_by_keywords(
+                        keywords=st.session_state.selected_keywords,
+                        hours=hours,
+                        style=style,
+                        word_count=word_count,
+                        language=language
                     )
                     
-                    word_count = st.number_input(
-                        "글자수 (자)", 
-                        min_value=500, 
-                        max_value=3000, 
-                        value=1000, 
-                        step=100
-                    )
-                
-                with col2:
-                    language = st.selectbox(
-                        "언어", 
-                        ["ko", "en"],
-                        format_func=lambda x: {"ko": "한국어", "en": "영어"}.get(x, x)
-                    )
-                    
-                    generate_button = st.button("뉴스 생성", key="generate_by_keywords")
-                
-                if generate_button:
-                    with st.spinner(f"선택한 키워드 '{', '.join(st.session_state.selected_keywords)}'에 대한 뉴스를 생성하는 중..."):
-                        from db_handler import generate_news_by_keywords
-                        news_article = generate_news_by_keywords(
-                            keywords=st.session_state.selected_keywords,
-                            hours=hours,
-                            style=style,
-                            word_count=word_count,
-                            language=language
-                        )
-                        
-                        if news_article:
-                            st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")
-                            # 새로 생성된 뉴스를 세션에 저장하여 바로 표시
-                            st.session_state.current_news = news_article
-                        else:
-                            st.error("뉴스 생성에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
+                    if news_article:
+                        st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")
+                        # 새로 생성된 뉴스를 세션에 저장하여 바로 표시
+                        st.session_state.current_news = news_article
+                    else:
+                        st.error("뉴스 생성에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
     
     # 최신 뉴스 목록 또는 현재 뉴스 표시
     if 'current_news' in st.session_state and st.session_state.current_news:
