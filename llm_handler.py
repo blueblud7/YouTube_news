@@ -15,6 +15,21 @@ SYSTEM_PROMPTS = {
     "news_economic": "당신은 경제 분야의 최고 전문가로서 신문 1면 또는 사설을 작성하는 경제 전문 기자입니다. 여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장의 현재 상황과 향후 전망에 대한 심층적이고 통찰력 있는 사설을 작성해주세요. 주요 경제 이슈, 시장 동향, 투자 전략에 대한 전문적인 의견을 제시하고, 일반 독자도 이해할 수 있도록 명확하게 설명해주세요. 제목과 부제목을 포함하여 구조화된 형식으로 작성해주세요."
 }
 
+# 리포트 스타일별 프롬프트 정의
+REPORT_STYLES = {
+    "basic": "여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장의 현재 상황과 향후 전망에 대한 보고서를 작성해주세요. 주요 경제 이슈, 시장 동향에 대한 정보를 제공해주세요. 제목과 부제목을 포함하여 구조화된 형식으로 작성해주세요.",
+    "concise": "여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장의 현재 상황과 향후 전망에 대한 간결한 요약을 작성해주세요. 핵심 포인트만 명확하게 설명하고, 군더더기 없이 간략하게 작성해주세요. 제목과 간단한 소제목을 포함해주세요.",
+    "editorial": "당신은 경제 분야의 최고 전문가로서 경제 사설을 작성하는 칼럼니스트입니다. 여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장의 현재 상황과 향후 전망에 대한 심층적이고 통찰력 있는 사설을 작성해주세요. 주요 경제 이슈에 대한 비판적 시각과 독자적인 견해를 제시하고, 논리적인 구조로 작성해주세요.",
+    "news": "당신은 경제 전문지의 기자입니다. 여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장에 대한 객관적이고 사실적인 신문 기사를 작성해주세요. 5W1H를 명확히 포함하고, 기사 제목, 부제목, 리드문단, 본문의 구조를 갖추어 작성해주세요.",
+    "research": "당신은 투자은행의 리서치 애널리스트입니다. 여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장에 대한 심층적인 연구 보고서를 작성해주세요. 데이터 기반 분석, 시장 트렌드 파악, 투자 전략 제안을 포함하고, 각 섹션이 체계적으로 구성된 전문적인 리서치 보고서를 작성해주세요."
+}
+
+# 언어별 설명 추가
+LANGUAGE_INSTRUCTIONS = {
+    "ko": "한국어로 작성해주세요.",
+    "en": "Please write in English."
+}
+
 def summarize_transcript(transcript: str, max_length: int = 1500, analysis_type: str = "summary") -> str:
     """
     GPT-4o-mini를 사용하여 자막을 요약합니다.
@@ -189,11 +204,14 @@ def get_available_analysis_types() -> List[Dict[str, str]]:
         {"code": "analysis_complex", "description": "복합 분석: 다양한 관점에서의 종합적 분석"}
     ] 
 
-def generate_economic_news(transcripts: List[str]) -> str:
+def generate_economic_news(transcripts: List[str], style: str = "basic", word_count: int = 1000, language: str = "ko") -> str:
     """
     여러 영상의 자막을 기반으로 경제 전문가가 작성한 것 같은 경제/주식 전망 사설을 생성합니다.
     
     :param transcripts: 여러 영상의 자막 목록
+    :param style: 리포트 스타일 (basic, concise, editorial, news, research)
+    :param word_count: 원하는 글자수 (대략적인 값)
+    :param language: 언어 선택 (ko: 한국어, en: 영어)
     :return: 경제/주식 전망 사설
     """
     if not transcripts:
@@ -215,8 +233,17 @@ def generate_economic_news(transcripts: List[str]) -> str:
     if not combined_text:
         return "유효한 자막이 없어 경제 뉴스를 생성할 수 없습니다."
     
-    # 시스템 프롬프트 선택
-    system_prompt = SYSTEM_PROMPTS["news_economic"]
+    # 스타일 선택 (기본값은 basic)
+    report_style = REPORT_STYLES.get(style, REPORT_STYLES["basic"])
+    
+    # 언어 선택 (기본값은 한국어)
+    language_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["ko"])
+    
+    # 스타일과 언어를 합친 시스템 프롬프트
+    system_prompt = f"{report_style} {language_instruction}"
+    
+    # 글자수 안내
+    tokens_instruction = f"약 {word_count}자 정도로 작성해주세요."
     
     try:
         # GPT-4o-mini 모델 사용
@@ -224,9 +251,9 @@ def generate_economic_news(transcripts: List[str]) -> str:
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"다음은 여러 경제 관련 유튜브 영상의 자막입니다. 이 내용을 바탕으로 경제 전문가가 작성한 것 같은 경제 및 주식 시장 전망에 대한 신문 사설을 작성해주세요.\n\n{combined_text}"}
+                {"role": "user", "content": f"다음은 여러 경제 관련 유튜브 영상의 자막입니다. 이 내용을 바탕으로 {tokens_instruction}\n\n{combined_text}"}
             ],
-            max_tokens=2000,
+            max_tokens=int(word_count * 1.5),  # 원하는 글자수의 약 1.5배 토큰으로 설정
             temperature=0.7  # 더 창의적인 결과를 위해 온도 조정
         )
         return response.choices[0].message["content"].strip()

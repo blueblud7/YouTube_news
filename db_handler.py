@@ -67,7 +67,10 @@ def initialize_db():
             content TEXT NOT NULL,
             news_type TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            video_ids TEXT
+            video_ids TEXT,
+            style TEXT DEFAULT 'basic',
+            word_count INTEGER DEFAULT 1000,
+            language TEXT DEFAULT 'ko'
         )
     """)
     
@@ -707,7 +710,7 @@ def analyze_video(video_id: str, analysis_type: str) -> bool:
         print(f"비디오 분석 중 오류 발생: {e}")
         return False
 
-def save_news_article(title: str, content: str, news_type: str = "economic", video_ids: List[str] = None) -> bool:
+def save_news_article(title: str, content: str, news_type: str = "economic", video_ids: List[str] = None, style: str = "basic", word_count: int = 1000, language: str = "ko") -> bool:
     """
     뉴스 사설을 데이터베이스에 저장합니다.
     
@@ -715,6 +718,9 @@ def save_news_article(title: str, content: str, news_type: str = "economic", vid
     :param content: 뉴스 사설 내용
     :param news_type: 뉴스 유형 (economic, political, social 등)
     :param video_ids: 사설 생성에 사용된 비디오 ID 목록
+    :param style: 리포트 스타일 (basic, concise, editorial, news, research)
+    :param word_count: 글자수
+    :param language: 언어 (ko, en)
     :return: 성공 여부
     """
     conn = sqlite3.connect(DB_PATH)
@@ -724,17 +730,45 @@ def save_news_article(title: str, content: str, news_type: str = "economic", vid
         # 비디오 ID 목록을 쉼표로 구분된 문자열로 변환
         video_ids_str = ",".join(video_ids) if video_ids else None
         
-        # 뉴스 사설 저장
-        cursor.execute("""
-            INSERT INTO news (title, content, news_type, created_at, video_ids)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            title,
-            content,
-            news_type,
-            datetime.now().isoformat(),
-            video_ids_str
-        ))
+        # 테이블에 style, word_count, language 필드가 존재하는지 확인
+        cursor.execute("PRAGMA table_info(news)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if all(field in columns for field in ['style', 'word_count', 'language']):
+            # 새 필드가 있는 경우 모든 필드를 포함하여 뉴스 사설 저장
+            cursor.execute("""
+                INSERT INTO news (title, content, news_type, created_at, video_ids, style, word_count, language)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                title,
+                content,
+                news_type,
+                datetime.now().isoformat(),
+                video_ids_str,
+                style,
+                word_count,
+                language
+            ))
+        else:
+            # 기존 테이블 구조에 맞게 저장
+            cursor.execute("""
+                INSERT INTO news (title, content, news_type, created_at, video_ids)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                title,
+                content,
+                news_type,
+                datetime.now().isoformat(),
+                video_ids_str
+            ))
+            
+            # 필요한 필드 추가
+            for field, default in [('style', "'basic'"), ('word_count', "1000"), ('language', "'ko'")]:
+                if field not in columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE news ADD COLUMN {field} {get_field_type(field)} DEFAULT {default}")
+                    except sqlite3.OperationalError:
+                        print(f"필드 {field}를 추가하는데 실패했습니다. 이미 존재할 수 있습니다.")
         
         conn.commit()
         conn.close()
@@ -745,6 +779,13 @@ def save_news_article(title: str, content: str, news_type: str = "economic", vid
         conn.rollback()
         conn.close()
         return False
+
+def get_field_type(field_name: str) -> str:
+    """필드 이름에 따른 적절한 데이터 타입을 반환합니다."""
+    if field_name == 'word_count':
+        return 'INTEGER'
+    else:
+        return 'TEXT'
 
 def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, Any]]:
     """
@@ -758,17 +799,32 @@ def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, An
     cursor = conn.cursor()
     
     try:
+        # 테이블 구조 확인
+        cursor.execute("PRAGMA table_info(news)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        # 기본 필드
+        fields = "id, title, content, news_type, created_at, video_ids"
+        
+        # 추가 필드가 존재하면 포함
+        if 'style' in columns:
+            fields += ", style"
+        if 'word_count' in columns:
+            fields += ", word_count"
+        if 'language' in columns:
+            fields += ", language"
+        
         if news_type:
-            cursor.execute("""
-                SELECT id, title, content, news_type, created_at, video_ids
+            cursor.execute(f"""
+                SELECT {fields}
                 FROM news
                 WHERE news_type = ?
                 ORDER BY created_at DESC
                 LIMIT ?
             """, (news_type, limit))
         else:
-            cursor.execute("""
-                SELECT id, title, content, news_type, created_at, video_ids
+            cursor.execute(f"""
+                SELECT {fields}
                 FROM news
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -780,14 +836,27 @@ def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, An
         # 결과를 딕셔너리 목록으로 변환
         news_list = []
         for row in rows:
-            news_list.append({
+            news_item = {
                 "id": row[0],
                 "title": row[1],
                 "content": row[2],
                 "news_type": row[3],
                 "created_at": row[4],
                 "video_ids": row[5].split(",") if row[5] else []
-            })
+            }
+            
+            # 추가 필드가 결과에 있으면 포함
+            field_index = 6
+            if 'style' in columns and field_index < len(row):
+                news_item["style"] = row[field_index]
+                field_index += 1
+            if 'word_count' in columns and field_index < len(row):
+                news_item["word_count"] = row[field_index]
+                field_index += 1
+            if 'language' in columns and field_index < len(row):
+                news_item["language"] = row[field_index]
+            
+            news_list.append(news_item)
         
         return news_list
     except Exception as e:
@@ -806,8 +875,23 @@ def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
     cursor = conn.cursor()
     
     try:
-        cursor.execute("""
-            SELECT id, title, content, news_type, created_at, video_ids
+        # 테이블 구조 확인
+        cursor.execute("PRAGMA table_info(news)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        # 기본 필드
+        fields = "id, title, content, news_type, created_at, video_ids"
+        
+        # 추가 필드가 존재하면 포함
+        if 'style' in columns:
+            fields += ", style"
+        if 'word_count' in columns:
+            fields += ", word_count"
+        if 'language' in columns:
+            fields += ", language"
+        
+        cursor.execute(f"""
+            SELECT {fields}
             FROM news
             WHERE id = ?
         """, (news_id,))
@@ -819,7 +903,7 @@ def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
             return None
         
         # 결과를 딕셔너리로 변환
-        return {
+        news_item = {
             "id": row[0],
             "title": row[1],
             "content": row[2],
@@ -827,16 +911,32 @@ def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
             "created_at": row[4],
             "video_ids": row[5].split(",") if row[5] else []
         }
+        
+        # 추가 필드가 결과에 있으면 포함
+        field_index = 6
+        if 'style' in columns and field_index < len(row):
+            news_item["style"] = row[field_index]
+            field_index += 1
+        if 'word_count' in columns and field_index < len(row):
+            news_item["word_count"] = row[field_index]
+            field_index += 1
+        if 'language' in columns and field_index < len(row):
+            news_item["language"] = row[field_index]
+        
+        return news_item
     except Exception as e:
         print(f"뉴스 사설 조회 중 오류 발생: {e}")
         conn.close()
         return None
 
-def generate_economic_news_from_recent_videos(hours: int = 24) -> Optional[Dict[str, Any]]:
+def generate_economic_news_from_recent_videos(hours: int = 24, style: str = "basic", word_count: int = 1000, language: str = "ko") -> Optional[Dict[str, Any]]:
     """
     최근 지정된 시간 내의 비디오 자막을 사용하여 경제 뉴스 사설을 생성합니다.
     
     :param hours: 몇 시간 이내의 비디오를 대상으로 할지 (기본값 24시간)
+    :param style: 리포트 스타일 (basic, concise, editorial, news, research)
+    :param word_count: 원하는 글자수 (대략적인 값)
+    :param language: 언어 선택 (ko: 한국어, en: 영어)
     :return: 생성된 뉴스 사설 정보 (성공한 경우) 또는 None (실패한 경우)
     """
     from llm_handler import generate_economic_news
@@ -877,8 +977,13 @@ def generate_economic_news_from_recent_videos(hours: int = 24) -> Optional[Dict[
             print("자막이 있는 비디오가 없습니다.")
             return None
         
-        # 경제 뉴스 사설 생성
-        news_content = generate_economic_news(transcripts)
+        # 경제 뉴스 사설 생성 (스타일, 글자수, 언어 옵션 추가)
+        news_content = generate_economic_news(
+            transcripts, 
+            style=style, 
+            word_count=word_count, 
+            language=language
+        )
         
         # 제목 추출 (첫 번째 줄을 제목으로 사용)
         lines = news_content.split('\n')
@@ -894,7 +999,9 @@ def generate_economic_news_from_recent_videos(hours: int = 24) -> Optional[Dict[
                 "content": news_content,
                 "news_type": "economic",
                 "created_at": datetime.now().isoformat(),
-                "video_ids": video_ids
+                "video_ids": video_ids,
+                "style": style,
+                "language": language
             }
         else:
             return None

@@ -29,7 +29,10 @@ def add_news_table():
                 content TEXT NOT NULL,
                 news_type TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                video_ids TEXT
+                video_ids TEXT,
+                style TEXT DEFAULT 'basic',
+                word_count INTEGER DEFAULT 1000,
+                language TEXT DEFAULT 'ko'
             )
         """)
         conn.commit()
@@ -37,5 +40,40 @@ def add_news_table():
     
     conn.close()
 
+def update_news_table():
+    """뉴스 테이블에 새로운 필드를 추가합니다."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # 뉴스 테이블이 있는지 확인
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='news'")
+    if not cursor.fetchone():
+        print("news 테이블이 존재하지 않습니다. 먼저 add_news_table()을 실행하세요.")
+        conn.close()
+        return
+    
+    # 현재 컬럼 구조 확인
+    cursor.execute("PRAGMA table_info(news)")
+    columns = [column[1] for column in cursor.fetchall()]
+    
+    # 필요한 필드 추가
+    for field, field_type, default in [
+        ('style', 'TEXT', "'basic'"), 
+        ('word_count', 'INTEGER', "1000"), 
+        ('language', 'TEXT', "'ko'")
+    ]:
+        if field not in columns:
+            try:
+                cursor.execute(f"ALTER TABLE news ADD COLUMN {field} {field_type} DEFAULT {default}")
+                print(f"news 테이블에 {field} 필드가 추가되었습니다.")
+            except sqlite3.OperationalError as e:
+                print(f"필드 {field} 추가 중 오류 발생: {e}")
+        else:
+            print(f"news 테이블에 {field} 필드가 이미 존재합니다.")
+    
+    conn.commit()
+    conn.close()
+
 if __name__ == "__main__":
-    add_news_table() 
+    add_news_table()
+    update_news_table() 

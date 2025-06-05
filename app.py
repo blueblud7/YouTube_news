@@ -904,16 +904,50 @@ def news_page():
     
     # 수동으로 뉴스 생성 옵션
     with st.expander("새 뉴스 사설 생성"):
-        col1, col2 = st.columns([3, 1])
+        # 시간 범위 선택
+        hours = st.slider("몇 시간 이내의 비디오를 분석할지 선택", 1, 72, 24)
+        
+        # 스타일, 글자수, 언어 선택 옵션 추가
+        col1, col2 = st.columns(2)
         with col1:
-            hours = st.slider("몇 시간 이내의 비디오를 분석할지 선택", 1, 72, 24)
+            style = st.selectbox(
+                "리포트 스타일", 
+                ["basic", "concise", "editorial", "news", "research"],
+                format_func=lambda x: {
+                    "basic": "기본", 
+                    "concise": "간결", 
+                    "editorial": "사설", 
+                    "news": "신문기사", 
+                    "research": "딥리서치"
+                }.get(x, x)
+            )
+            
+            word_count = st.number_input(
+                "글자수 (자)", 
+                min_value=500, 
+                max_value=3000, 
+                value=1000, 
+                step=100
+            )
+        
         with col2:
+            language = st.selectbox(
+                "언어", 
+                ["ko", "en"],
+                format_func=lambda x: {"ko": "한국어", "en": "영어"}.get(x, x)
+            )
+            
             generate_button = st.button("뉴스 생성")
         
         if generate_button:
             with st.spinner("최근 영상의 자막을 분석하여 경제/주식 전망 뉴스를 생성하는 중..."):
                 from db_handler import generate_economic_news_from_recent_videos
-                news_article = generate_economic_news_from_recent_videos(hours=hours)
+                news_article = generate_economic_news_from_recent_videos(
+                    hours=hours,
+                    style=style,
+                    word_count=word_count,
+                    language=language
+                )
                 
                 if news_article:
                     st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")

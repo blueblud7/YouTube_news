@@ -384,7 +384,12 @@ def run_scheduler(analysis_types=None):
             print("신규 콘텐츠 리포트 생성 실패 또는 처리할 데이터 없음.")
         
         # 경제 뉴스 사설 생성
-        news_article = generate_economic_news_from_recent_videos(hours=interval_hours)
+        news_article = generate_economic_news_from_recent_videos(
+            hours=interval_hours,
+            style="editorial",  # 기본 스타일: 사설
+            word_count=1200,    # 기본 글자수: 1200자
+            language="ko"       # 기본 언어: 한국어
+        )
         if news_article:
             print(f"경제 뉴스 사설 생성 완료: {news_article['title']}")
         else:
