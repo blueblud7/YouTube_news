@@ -39,7 +39,7 @@ def sidebar_menu():
     st.sidebar.title("YouTube 자막 분석 시스템")
     menu = st.sidebar.radio(
         "메뉴 선택",
-        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "상세 영상 분석"]
+        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "최신 영상 분석"]
     )
     return menu
 
@@ -410,8 +410,19 @@ def channel_keyword_management_page():
                         st.write(f"{i+1}. {channel_url}")
                     with col2:
                         if st.button("삭제", key=f"del_channel_{i}"):
+                            # config.json에서 채널 삭제
                             config["channels"].remove(channel_url)
                             save_config(config)
+                            
+                            # 데이터베이스에서도 삭제
+                            from youtube_handler import extract_channel_handle, get_channel_info_by_handle
+                            handle = extract_channel_handle(channel_url)
+                            if handle:
+                                channel_info = get_channel_info_by_handle(handle)
+                                if channel_info and channel_info.get("id"):
+                                    from db_handler import delete_channel
+                                    delete_channel(channel_info.get("id"))
+                            
                             st.success(f"채널 '{channel_url}'이(가) 삭제되었습니다.")
                             st.rerun()
             else:
@@ -429,16 +440,31 @@ def channel_keyword_management_page():
                 if new_channel in config["channels"]:
                     st.warning(f"채널 '{new_channel}'은(는) 이미 등록되어 있습니다.")
                 else:
-                    from youtube_handler import extract_channel_handle
+                    from youtube_handler import extract_channel_handle, get_channel_info_by_handle
                     handle = extract_channel_handle(new_channel)
                     if not handle:
                         st.error("유효한 YouTube 채널 URL이 아닙니다.")
                     else:
-                        # 채널 추가
-                        from main import add_channel
-                        add_channel(new_channel)
-                        st.success(f"채널 '{new_channel}'이(가) 추가되었습니다.")
-                        st.rerun()
+                        # 채널 정보 가져오기
+                        channel_info = get_channel_info_by_handle(handle)
+                        if channel_info and channel_info.get("id"):
+                            # config.json에 채널 추가
+                            from main import add_channel
+                            add_channel(new_channel)
+                            
+                            # 데이터베이스의 channels 테이블에도 추가
+                            from db_handler import add_channel as db_add_channel
+                            db_add_channel(
+                                channel_id=channel_info.get("id"),
+                                title=channel_info.get("title"),
+                                handle=handle,
+                                description=channel_info.get("description")
+                            )
+                            
+                            st.success(f"채널 '{new_channel}'이(가) 추가되었습니다.")
+                            st.rerun()
+                        else:
+                            st.error(f"채널 '{handle}'의 정보를 가져오지 못했습니다.")
     
     # 키워드 관리 탭
     with tabs[1]:
@@ -1109,167 +1135,315 @@ def display_latest_news():
         st.session_state.current_news = selected_news
         display_news(selected_news)
 
-# 상세 영상 분석 페이지
-def detailed_analysis_page():
-    st.title("상세 영상 분석")
+# 최신 영상 분석 페이지
+def latest_videos_analysis_page():
+    st.title("채널/키워드별 최신 영상 분석")
     
-    st.markdown("""
-    이 페이지에서는 등록된 채널의 최신 영상에 대한 상세 분석 정보를 제공합니다.
-    영상 내용, 주식 종목 정보, 경제 지표 등이 자세하게 분석됩니다.
-    """)
+    # 탭 생성
+    tab1, tab2, tab3 = st.tabs(["채널별 분석", "키워드별 분석", "주식 종목별 분석"])
     
-    # 키워드 기반 필터링 옵션
-    st.subheader("키워드 검색")
+    with tab1:
+        st.subheader("채널별 최신 영상 분석")
+        
+        # 채널 목록 가져오기
+        channels = get_all_channels()
+        
+        if not channels:
+            st.warning("등록된 채널이 없습니다. '채널 및 키워드 관리' 메뉴에서 채널을 추가해주세요.")
+        else:
+            # 채널 선택
+            selected_channel = st.selectbox(
+                "분석할 채널 선택",
+                options=[c["channel_id"] for c in channels],
+                format_func=lambda x: next((c["title"] for c in channels if c["channel_id"] == x), x)
+            )
+            
+            # 시간 범위 선택
+            hours = st.slider("최근 몇 시간 이내의 영상을 분석할까요?", 24, 168, 72, 24)
+            
+            # 최대 결과 수 선택
+            limit = st.slider("최대 몇 개의 영상을 분석할까요?", 5, 20, 10, 1)
+            
+            if st.button("채널 영상 분석 실행"):
+                with st.spinner("채널의 최신 영상 분석 중..."):
+                    # 최신 영상 분석 정보 가져오기
+                    from db_handler import get_latest_videos_analysis_by_channel
+                    videos = get_latest_videos_analysis_by_channel(selected_channel, hours=hours, limit=limit)
+                    
+                    if not videos:
+                        st.info(f"최근 {hours}시간 이내에 등록된 영상이 없습니다.")
+                    else:
+                        st.success(f"{len(videos)}개의 영상이 분석되었습니다.")
+                        
+                        # 각 영상 정보 표시
+                        for i, video in enumerate(videos):
+                            st.markdown(f"### {i+1}. {video['title']}")
+                            st.markdown(f"**채널:** {video['channel_title']} | **게시일:** {video['published_at']}")
+                            st.markdown(f"**영상 링크:** [YouTube에서 보기]({video['url']})")
+                            
+                            # 요약 정보가 있으면 표시
+                            if 'summaries' in video and video['summaries']:
+                                with st.expander("영상 요약"):
+                                    for summary_type, content in video['summaries'].items():
+                                        st.markdown(f"**{summary_type}:**")
+                                        st.markdown(content)
+                            else:
+                                st.warning("이 영상에 대한 요약 정보가 없습니다.")
+                                # 분석 수행 버튼
+                                if st.button(f"영상 요약 생성", key=f"analyze_summary_{video['id']}"):
+                                    with st.spinner(f"'{video['title']}' 영상 요약 생성 중..."):
+                                        from db_handler import analyze_video
+                                        success = analyze_video(video['id'], "summary")
+                                        if success:
+                                            st.success(f"영상 요약이 생성되었습니다.")
+                                            st.rerun()
+                                        else:
+                                            st.error("영상 요약 생성 중 오류가 발생했습니다.")
+                            
+                            # 주식 종목 정보가 있으면 표시
+                            if 'stock_info' in video and video['stock_info']:
+                                with st.expander("언급된 주식 종목 정보", expanded=True):
+                                    for stock in video['stock_info']:
+                                        st.markdown(f"**회사명:** {stock.get('회사명', 'N/A')}")
+                                        if '티커' in stock:
+                                            st.markdown(f"**티커:** {stock.get('티커', 'N/A')}")
+                                        if '언급된_내용' in stock:
+                                            st.markdown(f"**언급된 내용:**")
+                                            st.markdown(stock.get('언급된_내용', 'N/A'))
+                                        st.markdown("---")
+                            
+                            # 상세 분석 정보가 있으면 표시
+                            if 'detailed_analysis' in video and video['detailed_analysis'] and 'analysis_data' in video['detailed_analysis']:
+                                with st.expander("상세 분석 결과"):
+                                    analysis_data = video['detailed_analysis']['analysis_data']
+                                    
+                                    # 경제 및 주식 시장 관련 주요 내용 요약
+                                    if '영상_내용_종합_요약' in analysis_data:
+                                        st.markdown("**종합 요약:**")
+                                        st.markdown(analysis_data['영상_내용_종합_요약'])
+                                    
+                                    # 언급된 경제 지표나 이벤트
+                                    if '언급된_경제_지표_및_이벤트' in analysis_data:
+                                        st.markdown("**언급된 경제 지표 및 이벤트:**")
+                                        st.markdown(analysis_data['언급된_경제_지표_및_이벤트'])
+                                    
+                                    # 시장 전망이나 예측 정보
+                                    if '시장_전망_및_예측' in analysis_data:
+                                        st.markdown("**시장 전망 및 예측:**")
+                                        st.markdown(analysis_data['시장_전망_및_예측'])
+                                    
+                                    # 투자 전략이나 조언
+                                    if '투자_전략_및_조언' in analysis_data:
+                                        st.markdown("**투자 전략 및 조언:**")
+                                        st.markdown(analysis_data['투자_전략_및_조언'])
+                            else:
+                                st.warning("이 영상에 대한 상세 분석 정보가 없습니다.")
+                                # 경제 분석 수행 버튼
+                                if st.button(f"경제 분석 생성", key=f"analyze_economic_{video['id']}"):
+                                    with st.spinner(f"'{video['title']}' 영상 경제 분석 중..."):
+                                        from db_handler import analyze_video
+                                        success = analyze_video(video['id'], "economic")
+                                        if success:
+                                            st.success(f"영상 경제 분석이 생성되었습니다.")
+                                            st.rerun()
+                                        else:
+                                            st.error("영상 경제 분석 생성 중 오류가 발생했습니다.")
+                            
+                            st.markdown("---")
     
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_keywords = st.text_input("관심 키워드로 검색 (쉼표로 구분)", placeholder="예: 금리, 테슬라, 애플")
-    
-    with col2:
-        hours = st.slider("최근 몇 시간", 1, 168, 72)  # 최대 7일(168시간)
-        search_button = st.button("검색")
-    
-    # 키워드 검색 버튼 클릭 시
-    if search_button and search_keywords:
-        keywords = [k.strip() for k in search_keywords.split(',') if k.strip()]
+    with tab2:
+        st.subheader("키워드별 최신 영상 분석")
+        
+        # 키워드 목록 가져오기
+        keywords = get_all_keywords()
         
         if not keywords:
-            st.warning("검색할 키워드를 입력해주세요.")
-        else:
-            with st.spinner(f"키워드 '{', '.join(keywords)}'에 관련된 영상 분석을 검색하는 중..."):
-                from db_handler import get_recent_detailed_analysis_by_keywords
-                analysis_results = get_recent_detailed_analysis_by_keywords(keywords, hours=hours, limit=10)
+            st.warning("등록된 키워드가 없습니다. '채널 및 키워드 관리' 메뉴에서 키워드를 추가해주세요.")
+            
+            # 키워드가 없어도 직접 입력 가능
+            custom_keyword = st.text_input("분석할 키워드 직접 입력")
+            if custom_keyword:
+                # 시간 범위 선택
+                hours = st.slider("최근 몇 시간 이내의 영상을 분석할까요? (키워드)", 24, 168, 72, 24)
                 
-                if analysis_results:
-                    st.session_state.keyword_analysis_results = analysis_results
-                    st.success(f"{len(analysis_results)}개의 관련 영상 분석을 찾았습니다!")
-                else:
-                    st.warning(f"키워드 '{', '.join(keywords)}'에 관련된 영상 분석을 찾지 못했습니다. 다른 키워드로 시도해보세요.")
+                # 최대 결과 수 선택
+                limit = st.slider("최대 몇 개의 영상을 분석할까요? (키워드)", 5, 20, 10, 1)
+                
+                if st.button("키워드 영상 분석 실행"):
+                    with st.spinner(f"'{custom_keyword}' 키워드 관련 최신 영상 분석 중..."):
+                        # 최신 영상 분석 정보 가져오기
+                        from db_handler import get_latest_videos_analysis_by_keyword
+                        videos = get_latest_videos_analysis_by_keyword(custom_keyword, hours=hours, limit=limit)
+                        
+                        display_keyword_videos_analysis(videos, custom_keyword, hours)
+        else:
+            # 키워드 선택
+            selected_keyword = st.selectbox(
+                "분석할 키워드 선택",
+                options=[k["keyword"] for k in keywords],
+                format_func=lambda x: x
+            )
+            
+            # 시간 범위 선택
+            hours = st.slider("최근 몇 시간 이내의 영상을 분석할까요? (키워드)", 24, 168, 72, 24)
+            
+            # 최대 결과 수 선택
+            limit = st.slider("최대 몇 개의 영상을 분석할까요? (키워드)", 5, 20, 10, 1)
+            
+            if st.button("키워드 영상 분석 실행"):
+                with st.spinner(f"'{selected_keyword}' 키워드 관련 최신 영상 분석 중..."):
+                    # 최신 영상 분석 정보 가져오기
+                    from db_handler import get_latest_videos_analysis_by_keyword
+                    videos = get_latest_videos_analysis_by_keyword(selected_keyword, hours=hours, limit=limit)
+                    
+                    display_keyword_videos_analysis(videos, selected_keyword, hours)
     
-    # 최신 분석 결과 목록 표시
-    if 'keyword_analysis_results' in st.session_state and st.session_state.keyword_analysis_results:
-        display_analysis_results(st.session_state.keyword_analysis_results)
+    with tab3:
+        st.subheader("주식 종목별 최신 영상 분석")
+        
+        # 주식 종목명 직접 입력
+        stock_name = st.text_input("분석할 주식 종목명 또는 티커 입력 (예: 삼성전자, AAPL)")
+        
+        if stock_name:
+            # 시간 범위 선택
+            hours = st.slider("최근 몇 시간 이내의 영상을 분석할까요? (주식)", 24, 336, 168, 24)
+            
+            # 최대 결과 수 선택
+            limit = st.slider("최대 몇 개의 영상을 분석할까요? (주식)", 5, 20, 10, 1)
+            
+            if st.button("주식 종목 영상 분석 실행"):
+                with st.spinner(f"'{stock_name}' 주식 종목 관련 최신 영상 분석 중..."):
+                    # 최신 영상 분석 정보 가져오기
+                    from db_handler import get_latest_videos_by_stock
+                    videos = get_latest_videos_by_stock(stock_name, hours=hours, limit=limit)
+                    
+                    if not videos:
+                        st.info(f"최근 {hours}시간 이내에 '{stock_name}' 주식 종목이 언급된 영상이 없습니다.")
+                    else:
+                        st.success(f"{len(videos)}개의 영상에서 '{stock_name}' 주식 종목이 언급되었습니다.")
+                        
+                        # 각 영상 정보 표시
+                        for i, video in enumerate(videos):
+                            st.markdown(f"### {i+1}. {video['title']}")
+                            st.markdown(f"**영상 링크:** [YouTube에서 보기]({video['url']})")
+                            st.markdown(f"**분석 시간:** {video['created_at']}")
+                            
+                            # 주식 종목 정보 표시 (항상 있음)
+                            st.markdown("#### 주식 종목 정보")
+                            for stock in video['stock_info']:
+                                col1, col2 = st.columns([1, 3])
+                                with col1:
+                                    st.markdown(f"**회사명:** {stock.get('회사명', 'N/A')}")
+                                    if '티커' in stock:
+                                        st.markdown(f"**티커:** {stock.get('티커', 'N/A')}")
+                                with col2:
+                                    if '언급된_내용' in stock:
+                                        st.markdown(f"**언급된 내용:**")
+                                        st.markdown(stock.get('언급된_내용', 'N/A'))
+                            
+                            # 추가 분석 정보
+                            with st.expander("영상 상세 분석"):
+                                analysis_data = video['analysis_data']
+                                
+                                # 경제 및 주식 시장 관련 주요 내용 요약
+                                if '영상_내용_종합_요약' in analysis_data:
+                                    st.markdown("**종합 요약:**")
+                                    st.markdown(analysis_data['영상_내용_종합_요약'])
+                                
+                                # 시장 전망이나 예측 정보
+                                if '시장_전망_및_예측' in analysis_data:
+                                    st.markdown("**시장 전망 및 예측:**")
+                                    st.markdown(analysis_data['시장_전망_및_예측'])
+                                
+                                # 투자 전략이나 조언
+                                if '투자_전략_및_조언' in analysis_data:
+                                    st.markdown("**투자 전략 및 조언:**")
+                                    st.markdown(analysis_data['투자_전략_및_조언'])
+                            
+                            st.markdown("---")
+
+# 키워드 영상 분석 결과 표시 헬퍼 함수
+def display_keyword_videos_analysis(videos, keyword, hours):
+    if not videos:
+        st.info(f"최근 {hours}시간 이내에 '{keyword}' 키워드가 포함된 영상이 없습니다.")
     else:
-        # 최신 분석 결과 가져오기
-        from db_handler import get_detailed_video_analysis
-        latest_analyses = get_detailed_video_analysis(limit=10)
+        st.success(f"{len(videos)}개의 영상에서 '{keyword}' 키워드가 발견되었습니다.")
         
-        if latest_analyses:
-            st.subheader("최근 분석된 영상")
-            display_analysis_results(latest_analyses)
-        else:
-            st.info("아직 분석된 영상이 없습니다. 채널을 등록하고 데이터를 수집해보세요.")
-
-def display_analysis_results(analysis_results):
-    """분석 결과 목록을 표시합니다."""
-    # 분석 결과 선택 옵션
-    analysis_titles = [f"{result['video_title']} ({result['created_at'][:10]})" for result in analysis_results]
-    
-    selected_index = st.selectbox("분석 결과 선택", range(len(analysis_titles)), format_func=lambda i: analysis_titles[i])
-    selected_analysis = analysis_results[selected_index]
-    
-    # 선택된 분석 결과 표시
-    display_detailed_analysis(selected_analysis)
-
-def display_detailed_analysis(analysis):
-    """상세 분석 결과를 표시합니다."""
-    st.subheader(analysis['video_title'])
-    
-    # 영상 기본 정보
-    st.markdown(f"**분석 일시:** {analysis['created_at'][:19].replace('T', ' ')}")
-    st.markdown(f"**영상 링크:** [YouTube에서 보기]({analysis['video_url']})")
-    
-    # 분석 데이터 확인
-    if 'analysis_data' not in analysis or not analysis['analysis_data']:
-        st.warning("이 영상에 대한 상세 분석 데이터가 없습니다.")
-        return
-    
-    analysis_data = analysis['analysis_data']
-    
-    # 탭으로 정보 구분
-    tabs = st.tabs(["요약", "주식 종목", "경제 지표", "전문가 의견", "투자 전략"])
-    
-    # 요약 탭
-    with tabs[0]:
-        if '영상_내용_종합_요약' in analysis_data and analysis_data['영상_내용_종합_요약'] != "정보 없음":
-            st.markdown(analysis_data['영상_내용_종합_요약'])
-        else:
-            st.info("영상 내용 요약 정보가 없습니다.")
-        
-        # 핵심 주제 및 논점
-        if '핵심_주제_및_논점' in analysis_data and analysis_data['핵심_주제_및_논점'] != "정보 없음":
-            st.subheader("핵심 주제 및 논점")
+        # 각 영상 정보 표시
+        for i, video in enumerate(videos):
+            st.markdown(f"### {i+1}. {video['title']}")
+            st.markdown(f"**채널:** {video['channel_title']} | **게시일:** {video['published_at']}")
+            st.markdown(f"**영상 링크:** [YouTube에서 보기]({video['url']})")
             
-            if isinstance(analysis_data['핵심_주제_및_논점'], list):
-                for point in analysis_data['핵심_주제_및_논점']:
-                    st.markdown(f"- {point}")
+            # 요약 정보가 있으면 표시
+            if 'summaries' in video and video['summaries']:
+                with st.expander("영상 요약"):
+                    for summary_type, content in video['summaries'].items():
+                        st.markdown(f"**{summary_type}:**")
+                        st.markdown(content)
             else:
-                st.markdown(analysis_data['핵심_주제_및_논점'])
-        
-        # 핵심 키워드
-        if '핵심_키워드' in analysis_data and analysis_data['핵심_키워드'] != "정보 없음":
-            st.subheader("핵심 키워드")
+                st.warning("이 영상에 대한 요약 정보가 없습니다.")
+                # 분석 수행 버튼
+                if st.button(f"영상 요약 생성", key=f"kw_analyze_summary_{video['id']}"):
+                    with st.spinner(f"'{video['title']}' 영상 요약 생성 중..."):
+                        from db_handler import analyze_video
+                        success = analyze_video(video['id'], "summary")
+                        if success:
+                            st.success(f"영상 요약이 생성되었습니다.")
+                            st.rerun()
+                        else:
+                            st.error("영상 요약 생성 중 오류가 발생했습니다.")
             
-            if isinstance(analysis_data['핵심_키워드'], list):
-                # 키워드를 여러 열로 표시
-                cols = st.columns(3)
-                for i, keyword in enumerate(analysis_data['핵심_키워드']):
-                    col_idx = i % 3
-                    with cols[col_idx]:
-                        st.markdown(f"- {keyword}")
-            else:
-                st.markdown(analysis_data['핵심_키워드'])
-    
-    # 주식 종목 탭
-    with tabs[1]:
-        if '언급된_모든_주식_종목_상세_정보' in analysis_data and analysis_data['언급된_모든_주식_종목_상세_정보'] != "정보 없음":
-            stocks = analysis_data['언급된_모든_주식_종목_상세_정보']
+            # 주식 종목 정보가 있으면 표시
+            if 'stock_info' in video and video['stock_info']:
+                with st.expander("언급된 주식 종목 정보", expanded=True):
+                    for stock in video['stock_info']:
+                        st.markdown(f"**회사명:** {stock.get('회사명', 'N/A')}")
+                        if '티커' in stock:
+                            st.markdown(f"**티커:** {stock.get('티커', 'N/A')}")
+                        if '언급된_내용' in stock:
+                            st.markdown(f"**언급된 내용:**")
+                            st.markdown(stock.get('언급된_내용', 'N/A'))
+                        st.markdown("---")
             
-            if isinstance(stocks, list) and stocks:
-                for i, stock in enumerate(stocks):
-                    with st.expander(f"{stock.get('회사명', '회사명 정보 없음')} {stock.get('티커_심볼', '')}", expanded=(i==0)):
-                        # 회사 정보
-                        if '회사명' in stock:
-                            st.markdown(f"**회사명:** {stock['회사명']}")
-                        
-                        # 티커 심볼
-                        if '티커_심볼' in stock and stock['티커_심볼'] != "정보 없음":
-                            st.markdown(f"**티커 심볼:** {stock['티커_심볼']}")
-                        
-                        # 언급된 맥락 및 내용
-                        if '언급된_맥락_및_내용' in stock and stock['언급된_맥락_및_내용'] != "정보 없음":
-                            st.markdown("**언급된 맥락 및 내용:**")
-                            st.markdown(stock['언급된_맥락_및_내용'])
-                        
-                        # 전망/예측
-                        if '전망/예측' in stock and stock['전망/예측'] != "정보 없음":
-                            st.markdown("**전망/예측:**")
-                            st.markdown(stock['전망/예측'])
+            # 상세 분석 정보가 있으면 표시
+            if 'detailed_analysis' in video and video['detailed_analysis'] and 'analysis_data' in video['detailed_analysis']:
+                with st.expander("상세 분석 결과"):
+                    analysis_data = video['detailed_analysis']['analysis_data']
+                    
+                    # 경제 및 주식 시장 관련 주요 내용 요약
+                    if '영상_내용_종합_요약' in analysis_data:
+                        st.markdown("**종합 요약:**")
+                        st.markdown(analysis_data['영상_내용_종합_요약'])
+                    
+                    # 언급된 경제 지표나 이벤트
+                    if '언급된_경제_지표_및_이벤트' in analysis_data:
+                        st.markdown("**언급된 경제 지표 및 이벤트:**")
+                        st.markdown(analysis_data['언급된_경제_지표_및_이벤트'])
+                    
+                    # 시장 전망이나 예측 정보
+                    if '시장_전망_및_예측' in analysis_data:
+                        st.markdown("**시장 전망 및 예측:**")
+                        st.markdown(analysis_data['시장_전망_및_예측'])
+                    
+                    # 투자 전략이나 조언
+                    if '투자_전략_및_조언' in analysis_data:
+                        st.markdown("**투자 전략 및 조언:**")
+                        st.markdown(analysis_data['투자_전략_및_조언'])
             else:
-                st.info("이 영상에서 언급된 주식 종목 정보가 없습니다.")
-        else:
-            st.info("이 영상에서 언급된 주식 종목 정보가 없습니다.")
-    
-    # 경제 지표 탭
-    with tabs[2]:
-        if '경제_지표_및_동향_종합_분석' in analysis_data and analysis_data['경제_지표_및_동향_종합_분석'] != "정보 없음":
-            st.markdown(analysis_data['경제_지표_및_동향_종합_분석'])
-        else:
-            st.info("이 영상에서 경제 지표 및 동향 분석 정보가 없습니다.")
-    
-    # 전문가 의견 탭
-    with tabs[3]:
-        if '전문가_의견이나_인용구' in analysis_data and analysis_data['전문가_의견이나_인용구'] != "정보 없음":
-            st.markdown(analysis_data['전문가_의견이나_인용구'])
-        else:
-            st.info("이 영상에서 전문가 의견이나 인용구 정보가 없습니다.")
-    
-    # 투자 전략 탭
-    with tabs[4]:
-        if '투자_전략이나_시사점' in analysis_data and analysis_data['투자_전략이나_시사점'] != "정보 없음":
-            st.markdown(analysis_data['투자_전략이나_시사점'])
-        else:
-            st.info("이 영상에서 투자 전략이나 시사점 정보가 없습니다.")
+                st.warning("이 영상에 대한 상세 분석 정보가 없습니다.")
+                # 경제 분석 수행 버튼
+                if st.button(f"경제 분석 생성", key=f"kw_analyze_economic_{video['id']}"):
+                    with st.spinner(f"'{video['title']}' 영상 경제 분석 중..."):
+                        from db_handler import analyze_video
+                        success = analyze_video(video['id'], "economic")
+                        if success:
+                            st.success(f"영상 경제 분석이 생성되었습니다.")
+                            st.rerun()
+                        else:
+                            st.error("영상 경제 분석 생성 중 오류가 발생했습니다.")
+            
+            st.markdown("---")
 
 # 메인 함수
 def main():
@@ -1283,12 +1457,35 @@ def main():
     if "channel_name_for_search" not in st.session_state:
         st.session_state.channel_name_for_search = None
     
+    # 기존에 config.json에 저장된 채널을 DB에 동기화
+    from config import load_config
+    from youtube_handler import extract_channel_handle, get_channel_info_by_handle
+    from db_handler import get_all_channels, add_channel
+    
+    config = load_config()
+    db_channels = get_all_channels()
+    db_channel_ids = [channel.get("channel_id") for channel in db_channels]
+    
+    # config.json에 있는 채널들을 DB에 추가
+    for channel_url in config["channels"]:
+        handle = extract_channel_handle(channel_url)
+        if handle:
+            channel_info = get_channel_info_by_handle(handle)
+            if channel_info and channel_info.get("id") and channel_info.get("id") not in db_channel_ids:
+                add_channel(
+                    channel_id=channel_info.get("id"),
+                    title=channel_info.get("title"),
+                    handle=handle,
+                    description=channel_info.get("description")
+                )
+                print(f"채널 '{channel_info.get('title')}' ({handle})가 DB에 추가되었습니다.")
+    
+    # 사이드바 메뉴 가져오기
+    menu = sidebar_menu()
+    
     # URL 파라미터 처리
     params = st.experimental_get_query_params()
     view_video = params.get("view", [None])[0]
-    
-    # 메뉴 선택
-    menu = sidebar_menu()
     
     # 페이지 전환
     if menu == "홈":
@@ -1312,8 +1509,8 @@ def main():
         saved_reports_page()
     elif menu == "뉴스":
         news_page()
-    elif menu == "상세 영상 분석":
-        detailed_analysis_page()
+    elif menu == "최신 영상 분석":
+        latest_videos_analysis_page()
 
 if __name__ == "__main__":
     main() 

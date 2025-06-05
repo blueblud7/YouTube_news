@@ -642,6 +642,45 @@ def extract_channel_handle(url):
     
     return None
 
+def get_latest_videos_from_channel(channel_id: str, max_results=10):
+    """
+    채널 ID를 통해 최신 동영상 목록을 가져옵니다.
+    max_results: 최대 결과 수 (기본값 10)
+    """
+    service = get_youtube_service()
+    if not service:
+        return None
+    try:
+        search_params = {
+            'channelId': channel_id,
+            'part': "snippet",
+            'type': "video",
+            'maxResults': max_results,
+            'order': 'date'  # 날짜순으로 정렬하여 최신 영상부터 가져옵니다
+        }
+        print(f"채널 ID '{channel_id}'의 최신 동영상 {max_results}개를 가져오는 중...")
+
+        search_response = service.search().list(**search_params).execute()
+
+        videos = []
+        for item in search_response.get("items", []):
+            videos.append({
+                "video_id": item["id"]["videoId"],
+                "title": item["snippet"]["title"],
+                "description": item["snippet"]["description"],
+                "channel_id": item["snippet"]["channelId"],
+                "channel_title": item["snippet"]["channelTitle"],
+                "published_at": item["snippet"]["publishedAt"]
+            })
+        print(f"채널 ID '{channel_id}'에서 {len(videos)}개의 동영상을 찾았습니다.")
+        return videos
+    except googleapiclient.errors.HttpError as e:
+        print(f"채널의 동영상 목록 조회 중 HttpError 발생 (채널 ID: {channel_id}): {e}")
+        return None
+    except Exception as e:
+        print(f"채널의 동영상 목록 조회 중 예상치 못한 오류 발생 (채널 ID: {channel_id}): {e}")
+        return None
+
 if __name__ == '__main__':
     print("=== 시작 ===")
     try:

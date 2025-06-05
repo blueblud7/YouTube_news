@@ -3,14 +3,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import os
 import json
-import logging
-
-from youtube_handler import get_channel_info, get_latest_videos_from_channel
-from llm_handler import analyze_transcript_for_economic_insights, create_detailed_video_summary, generate_news_by_keywords, extract_keywords, extract_sentiment, summarize_transcript
-
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # 데이터베이스 파일 경로 (프로젝트 루트에 저장)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_news.db")
@@ -93,19 +85,6 @@ def initialize_db():
             UNIQUE (keyword)
         )
     """)
-    
-    # 상세 영상 분석 테이블 생성
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS video_analysis (
-        analysis_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        video_id TEXT NOT NULL,
-        video_title TEXT,
-        video_url TEXT,
-        analysis_data TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(video_id) ON CONFLICT REPLACE
-    )
-    ''')
     
     conn.commit()
     conn.close()
@@ -1189,7 +1168,7 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
     :param language: 언어 선택 (ko: 한국어, en: 영어)
     :return: 생성된 뉴스 사설 정보 (성공한 경우) 또는 None (실패한 경우)
     """
-    from llm_handler import generate_news_by_keywords as generate_news
+    from llm_handler import generate_news_by_keywords
     
     if not keywords:
         print("키워드가 없어 뉴스를 생성할 수 없습니다.")
@@ -1232,7 +1211,7 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
             return None
         
         # 키워드 기반 뉴스 사설 생성
-        news_content = generate_news(
+        news_content = generate_news_by_keywords(
             transcripts,
             keywords,
             style=style,
@@ -1276,170 +1255,256 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
         print(f"키워드 기반 뉴스 사설 생성 중 오류 발생: {e}")
         return None
 
-def save_detailed_video_analysis(video_id, video_title, video_url, analysis_data):
-    """상세 영상 분석 정보 저장"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # 분석 데이터를 JSON 문자열로 변환
-        if isinstance(analysis_data, dict):
-            analysis_json = json.dumps(analysis_data, ensure_ascii=False)
-        else:
-            analysis_json = analysis_data
-        
-        # 분석 정보 저장 (이미 있으면 대체)
-        cursor.execute(
-            "INSERT OR REPLACE INTO video_analysis (video_id, video_title, video_url, analysis_data) VALUES (?, ?, ?, ?)",
-            (video_id, video_title, video_url, analysis_json)
-        )
-        
-        conn.commit()
-        conn.close()
-        
-        print(f"비디오 ID {video_id}의 상세 분석 정보가 저장되었습니다.")
-        return True
-        
-    except Exception as e:
-        print(f"상세 분석 정보 저장 중 오류 발생: {e}")
-        return False
-
-def get_detailed_video_analysis(video_id=None, limit=10):
-    """상세 영상 분석 정보 조회"""
+# 채널별 최신 영상 분석 정보를 가져오는 함수
+def get_latest_videos_analysis_by_channel(channel_id: str, hours: int = 72, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    특정 채널의 최신 영상들에 대한 분석 정보를 가져옵니다.
+    
+    :param channel_id: 채널 ID
+    :param hours: 최근 몇 시간 이내의 영상을 가져올지 (기본값: 72시간)
+    :param limit: 최대 결과 수 (기본값: 10)
+    :return: 최신 영상 분석 정보 목록
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        if video_id:
-            # 특정 비디오의 상세 분석 조회
-            cursor.execute(
-                "SELECT * FROM video_analysis WHERE video_id = ?",
-                (video_id,)
-            )
-            result = cursor.fetchone()
-            conn.close()
+        # 기본적으로 채널의 영상을 가져오되, 시간 제한을 확장 (7일)
+        time_threshold = (datetime.now() - timedelta(hours=hours*10)).isoformat()
+        
+        print(f"채널 ID '{channel_id}'의 최신 영상을 가져오는 중... 기준 시간: {time_threshold}")
+        
+        # 디버깅을 위해 해당 채널의 총 영상 수 확인
+        cursor.execute("SELECT COUNT(*) FROM videos WHERE channel_id = ?", (channel_id,))
+        total_videos = cursor.fetchone()[0]
+        print(f"채널 ID '{channel_id}'의 총 영상 수: {total_videos}")
+        
+        # 먼저 해당 채널의 최신 영상을 가져옴 (시간 제한 없이)
+        cursor.execute("""
+            SELECT v.id, v.title, v.published_at, v.channel_title, v.url
+            FROM videos v
+            WHERE v.channel_id = ?
+            ORDER BY v.published_at DESC
+            LIMIT ?
+        """, (channel_id, limit))
+        
+        videos = [dict(row) for row in cursor.fetchall()]
+        print(f"채널 ID '{channel_id}'에서 {len(videos)}개의 영상을 가져왔습니다.")
+        
+        # 각 영상에 대한 분석 정보 추가
+        for video in videos:
+            # 요약 정보 추가
+            video['summaries'] = get_summaries_for_video(video['id'])
             
-            if not result:
-                return None
-            
-            analysis_dict = dict(result)
-            
-            # 분석 데이터 파싱
-            if analysis_dict['analysis_data']:
-                try:
-                    analysis_dict['analysis_data'] = json.loads(analysis_dict['analysis_data'])
-                except:
-                    pass
-            
-            return analysis_dict
-        else:
-            # 최신 상세 분석 목록 조회
-            cursor.execute(
-                "SELECT * FROM video_analysis ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            )
-            results = cursor.fetchall()
-            conn.close()
-            
-            analysis_list = []
-            for result in results:
-                analysis_dict = dict(result)
-                
-                # 분석 데이터 파싱
-                if analysis_dict['analysis_data']:
+            # 상세 분석 정보 추가
+            detailed_analysis = get_detailed_video_analysis(video['id'])
+            if detailed_analysis:
+                # 분석 데이터가 JSON 문자열이면 파싱
+                if isinstance(detailed_analysis['analysis_data'], str):
                     try:
-                        analysis_dict['analysis_data'] = json.loads(analysis_dict['analysis_data'])
+                        detailed_analysis['analysis_data'] = json.loads(detailed_analysis['analysis_data'])
                     except:
                         pass
-                
-                analysis_list.append(analysis_dict)
+                video['detailed_analysis'] = detailed_analysis
             
-            return analysis_list
+            # 주식 종목 정보 추출 (상세 분석에서 주식 종목 정보가 있다면)
+            stock_info = []
+            if 'detailed_analysis' in video and 'analysis_data' in video['detailed_analysis']:
+                analysis_data = video['detailed_analysis']['analysis_data']
+                if isinstance(analysis_data, dict) and '언급된_모든_주식_종목_상세_정보' in analysis_data:
+                    stock_info = analysis_data['언급된_모든_주식_종목_상세_정보']
+            video['stock_info'] = stock_info
         
+        conn.close()
+        return videos
+    
     except Exception as e:
-        print(f"상세 분석 정보 조회 중 오류 발생: {e}")
-        return None
+        print(f"채널별 최신 영상 분석 정보 조회 중 오류 발생: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return []
 
-def get_recent_detailed_analysis_by_keywords(keywords, hours=72, limit=5):
-    """키워드 관련 최근 상세 분석 정보 조회"""
+# 키워드별 최신 영상 분석 정보를 가져오는 함수
+def get_latest_videos_analysis_by_keyword(keyword: str, hours: int = 72, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    특정 키워드를 포함하는 최신 영상들에 대한 분석 정보를 가져옵니다.
+    
+    :param keyword: 검색 키워드
+    :param hours: 최근 몇 시간 이내의 영상을 가져올지 (기본값: 72시간)
+    :param limit: 최대 결과 수 (기본값: 10)
+    :return: 최신 영상 분석 정보 목록
+    """
     try:
-        if not keywords:
-            return []
-        
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        # 최근 n시간 내의 상세 분석 조회
-        time_threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
-        cursor.execute(
-            "SELECT * FROM video_analysis WHERE created_at >= ? ORDER BY created_at DESC",
-            (time_threshold,)
-        )
+        # 디버깅을 위해 키워드가 포함된 총 영상 수 확인
+        cursor.execute("""
+            SELECT COUNT(*) FROM videos 
+            WHERE title LIKE ? OR transcript LIKE ?
+        """, (f'%{keyword}%', f'%{keyword}%'))
+        total_videos = cursor.fetchone()[0]
+        print(f"키워드 '{keyword}'가 포함된 총 영상 수: {total_videos}")
         
-        results = cursor.fetchall()
-        conn.close()
+        # 최신 영상 중 키워드가 포함된 영상 조회 (시간 제한 없이)
+        cursor.execute("""
+            SELECT v.id, v.title, v.published_at, v.channel_title, v.url
+            FROM videos v
+            WHERE v.title LIKE ? OR v.transcript LIKE ?
+            ORDER BY v.published_at DESC
+            LIMIT ?
+        """, (f'%{keyword}%', f'%{keyword}%', limit))
         
-        if not results:
-            return []
+        videos = [dict(row) for row in cursor.fetchall()]
+        print(f"키워드 '{keyword}'가 포함된 영상 {len(videos)}개를 가져왔습니다.")
         
-        # 키워드 관련성 확인
-        keyword_related_analyses = []
-        for result in results:
-            analysis_dict = dict(result)
+        # 각 영상에 대한 분석 정보 추가
+        for video in videos:
+            # 요약 정보 추가
+            video['summaries'] = get_summaries_for_video(video['id'])
             
-            # 분석 데이터 파싱
-            if analysis_dict['analysis_data']:
-                try:
-                    analysis_data = json.loads(analysis_dict['analysis_data'])
-                    
-                    # 키워드 관련성 확인
-                    is_related = False
-                    for keyword in keywords:
-                        keyword_lower = keyword.lower()
-                        
-                        # 제목에 키워드가 있는지 확인
-                        if keyword_lower in analysis_dict['video_title'].lower():
-                            is_related = True
-                            break
-                        
-                        # 내용 요약에 키워드가 있는지 확인
-                        if '영상_내용_종합_요약' in analysis_data and keyword_lower in analysis_data['영상_내용_종합_요약'].lower():
-                            is_related = True
-                            break
-                        
-                        # 핵심 키워드에 있는지 확인
-                        if '핵심_키워드' in analysis_data and isinstance(analysis_data['핵심_키워드'], list):
-                            for k in analysis_data['핵심_키워드']:
-                                if keyword_lower in k.lower():
-                                    is_related = True
-                                    break
-                        
-                        # 주식 종목 정보에 있는지 확인
-                        if '언급된_모든_주식_종목_상세_정보' in analysis_data and isinstance(analysis_data['언급된_모든_주식_종목_상세_정보'], list):
-                            for stock in analysis_data['언급된_모든_주식_종목_상세_정보']:
-                                if '회사명' in stock and keyword_lower in stock['회사명'].lower():
-                                    is_related = True
-                                    break
-                    
-                    if is_related:
-                        analysis_dict['analysis_data'] = analysis_data
-                        keyword_related_analyses.append(analysis_dict)
-                        
-                        # 제한된 수의 결과만 반환
-                        if len(keyword_related_analyses) >= limit:
-                            break
-                    
-                except Exception as e:
-                    print(f"분석 데이터 파싱 중 오류 발생: {e}")
-                    continue
+            # 상세 분석 정보 추가
+            detailed_analysis = get_detailed_video_analysis(video['id'])
+            if detailed_analysis:
+                # 분석 데이터가 JSON 문자열이면 파싱
+                if isinstance(detailed_analysis['analysis_data'], str):
+                    try:
+                        detailed_analysis['analysis_data'] = json.loads(detailed_analysis['analysis_data'])
+                    except:
+                        pass
+                video['detailed_analysis'] = detailed_analysis
+            
+            # 주식 종목 정보 추출 (상세 분석에서 주식 종목 정보가 있다면)
+            stock_info = []
+            if 'detailed_analysis' in video and 'analysis_data' in video['detailed_analysis']:
+                analysis_data = video['detailed_analysis']['analysis_data']
+                if isinstance(analysis_data, dict) and '언급된_모든_주식_종목_상세_정보' in analysis_data:
+                    stock_info = analysis_data['언급된_모든_주식_종목_상세_정보']
+            video['stock_info'] = stock_info
         
-        return keyword_related_analyses
-        
+        conn.close()
+        return videos
+    
     except Exception as e:
-        print(f"키워드 관련 상세 분석 정보 조회 중 오류 발생: {e}")
+        print(f"키워드별 최신 영상 분석 정보 조회 중 오류 발생: {e}")
+        import traceback
+        print(traceback.format_exc())
         return []
 
+# 주식 종목별 최신 영상 분석 정보를 가져오는 함수
+def get_latest_videos_by_stock(stock_name: str, hours: int = 168, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    특정 주식 종목이 언급된 최신 영상들을 가져옵니다.
+    
+    :param stock_name: 주식 종목명 또는 티커
+    :param hours: 최근 몇 시간 이내의 영상을 가져올지 (기본값: 168시간/7일)
+    :param limit: 최대 결과 수 (기본값: 10)
+    :return: 주식 종목이 언급된 최신 영상 목록
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 디버깅을 위해 video_analysis 테이블의 총 레코드 수 확인
+        cursor.execute("SELECT COUNT(*) FROM video_analysis")
+        total_analysis = cursor.fetchone()[0]
+        print(f"video_analysis 테이블의 총 레코드 수: {total_analysis}")
+        
+        # 모든 분석 데이터를 조회 (시간 제한 없이)
+        cursor.execute("""
+            SELECT va.video_id, va.video_title, va.video_url, va.analysis_data, va.created_at
+            FROM video_analysis va
+            JOIN videos v ON va.video_id = v.id
+            ORDER BY va.created_at DESC
+        """)
+        
+        results = cursor.fetchall()
+        print(f"분석 데이터 {len(results)}개를 가져왔습니다.")
+        conn.close()
+        
+        # 특정 주식 종목이 언급된 영상 필터링
+        stock_videos = []
+        for result in results:
+            result_dict = dict(result)
+            
+            # 분석 데이터 파싱
+            try:
+                analysis_data = json.loads(result_dict['analysis_data']) if isinstance(result_dict['analysis_data'], str) else result_dict['analysis_data']
+                
+                # 주식 종목 정보 확인
+                if '언급된_모든_주식_종목_상세_정보' in analysis_data and isinstance(analysis_data['언급된_모든_주식_종목_상세_정보'], list):
+                    stock_info = analysis_data['언급된_모든_주식_종목_상세_정보']
+                    
+                    # 주식 종목명 또는 티커가 일치하는지 확인
+                    for stock in stock_info:
+                        if ('회사명' in stock and stock_name.lower() in stock['회사명'].lower()) or \
+                           ('티커' in stock and stock_name.lower() in stock['티커'].lower()):
+                            # 해당 종목 정보를 맨 앞으로 이동
+                            matched_stock = stock
+                            filtered_stocks = [matched_stock] + [s for s in stock_info if s != matched_stock]
+                            
+                            # 결과 추가
+                            video_data = {
+                                'video_id': result_dict['video_id'],
+                                'title': result_dict['video_title'],
+                                'url': result_dict['video_url'],
+                                'created_at': result_dict['created_at'],
+                                'analysis_data': analysis_data,
+                                'stock_info': filtered_stocks
+                            }
+                            stock_videos.append(video_data)
+                            print(f"영상 '{result_dict['video_title']}'에서 '{stock_name}' 주식 종목이 언급되었습니다.")
+                            break
+            except Exception as e:
+                print(f"분석 데이터 파싱 중 오류 발생: {e}")
+                continue
+        
+        print(f"총 {len(stock_videos)}개의 영상에서 '{stock_name}' 주식 종목이 언급되었습니다.")
+        
+        # 최대 결과 수로 제한
+        return stock_videos[:limit]
+    
+    except Exception as e:
+        print(f"주식 종목별 최신 영상 분석 정보 조회 중 오류 발생: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return []
+
+# 비디오 상세 분석 정보를 가져오는 함수
+def get_detailed_video_analysis(video_id: str) -> Optional[Dict[str, Any]]:
+    """
+    특정 비디오의 상세 분석 정보를 가져옵니다.
+    
+    :param video_id: 비디오 ID
+    :return: 상세 분석 정보 (없으면 None)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT video_id, analysis_type, analysis_data, created_at
+            FROM video_analysis
+            WHERE video_id = ? AND analysis_type = 'economic'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (video_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return dict(result)
+        else:
+            return None
+    
+    except Exception as e:
+        print(f"비디오 상세 분석 정보 조회 중 오류 발생: {e}")
+        return None
+
 # 데이터베이스 초기화 (모듈 로드 시 실행)
-init_db() 
+initialize_db() 
