@@ -2,6 +2,15 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import os
+import json
+import logging
+
+from youtube_api import get_channel_info, get_latest_videos_from_channel
+from llm_handler import analyze_transcript_for_economic_insights, create_detailed_video_summary, generate_news_by_keywords, extract_keywords, extract_sentiment, summarize_transcript
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 데이터베이스 파일 경로 (프로젝트 루트에 저장)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_news.db")
@@ -84,6 +93,19 @@ def initialize_db():
             UNIQUE (keyword)
         )
     """)
+    
+    # 상세 영상 분석 테이블 생성
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS video_analysis (
+        analysis_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id TEXT NOT NULL,
+        video_title TEXT,
+        video_url TEXT,
+        analysis_data TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(video_id) ON CONFLICT REPLACE
+    )
+    ''')
     
     conn.commit()
     conn.close()
@@ -1167,7 +1189,7 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
     :param language: 언어 선택 (ko: 한국어, en: 영어)
     :return: 생성된 뉴스 사설 정보 (성공한 경우) 또는 None (실패한 경우)
     """
-    from llm_handler import generate_news_by_keywords
+    from llm_handler import generate_news_by_keywords as generate_news
     
     if not keywords:
         print("키워드가 없어 뉴스를 생성할 수 없습니다.")
@@ -1210,7 +1232,7 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
             return None
         
         # 키워드 기반 뉴스 사설 생성
-        news_content = generate_news_by_keywords(
+        news_content = generate_news(
             transcripts,
             keywords,
             style=style,
@@ -1253,6 +1275,171 @@ def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str =
     except Exception as e:
         print(f"키워드 기반 뉴스 사설 생성 중 오류 발생: {e}")
         return None
+
+def save_detailed_video_analysis(video_id, video_title, video_url, analysis_data):
+    """상세 영상 분석 정보 저장"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # 분석 데이터를 JSON 문자열로 변환
+        if isinstance(analysis_data, dict):
+            analysis_json = json.dumps(analysis_data, ensure_ascii=False)
+        else:
+            analysis_json = analysis_data
+        
+        # 분석 정보 저장 (이미 있으면 대체)
+        cursor.execute(
+            "INSERT OR REPLACE INTO video_analysis (video_id, video_title, video_url, analysis_data) VALUES (?, ?, ?, ?)",
+            (video_id, video_title, video_url, analysis_json)
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"비디오 ID {video_id}의 상세 분석 정보가 저장되었습니다.")
+        return True
+        
+    except Exception as e:
+        print(f"상세 분석 정보 저장 중 오류 발생: {e}")
+        return False
+
+def get_detailed_video_analysis(video_id=None, limit=10):
+    """상세 영상 분석 정보 조회"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if video_id:
+            # 특정 비디오의 상세 분석 조회
+            cursor.execute(
+                "SELECT * FROM video_analysis WHERE video_id = ?",
+                (video_id,)
+            )
+            result = cursor.fetchone()
+            conn.close()
+            
+            if not result:
+                return None
+            
+            analysis_dict = dict(result)
+            
+            # 분석 데이터 파싱
+            if analysis_dict['analysis_data']:
+                try:
+                    analysis_dict['analysis_data'] = json.loads(analysis_dict['analysis_data'])
+                except:
+                    pass
+            
+            return analysis_dict
+        else:
+            # 최신 상세 분석 목록 조회
+            cursor.execute(
+                "SELECT * FROM video_analysis ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
+            results = cursor.fetchall()
+            conn.close()
+            
+            analysis_list = []
+            for result in results:
+                analysis_dict = dict(result)
+                
+                # 분석 데이터 파싱
+                if analysis_dict['analysis_data']:
+                    try:
+                        analysis_dict['analysis_data'] = json.loads(analysis_dict['analysis_data'])
+                    except:
+                        pass
+                
+                analysis_list.append(analysis_dict)
+            
+            return analysis_list
+        
+    except Exception as e:
+        print(f"상세 분석 정보 조회 중 오류 발생: {e}")
+        return None
+
+def get_recent_detailed_analysis_by_keywords(keywords, hours=72, limit=5):
+    """키워드 관련 최근 상세 분석 정보 조회"""
+    try:
+        if not keywords:
+            return []
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 최근 n시간 내의 상세 분석 조회
+        time_threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor.execute(
+            "SELECT * FROM video_analysis WHERE created_at >= ? ORDER BY created_at DESC",
+            (time_threshold,)
+        )
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        if not results:
+            return []
+        
+        # 키워드 관련성 확인
+        keyword_related_analyses = []
+        for result in results:
+            analysis_dict = dict(result)
+            
+            # 분석 데이터 파싱
+            if analysis_dict['analysis_data']:
+                try:
+                    analysis_data = json.loads(analysis_dict['analysis_data'])
+                    
+                    # 키워드 관련성 확인
+                    is_related = False
+                    for keyword in keywords:
+                        keyword_lower = keyword.lower()
+                        
+                        # 제목에 키워드가 있는지 확인
+                        if keyword_lower in analysis_dict['video_title'].lower():
+                            is_related = True
+                            break
+                        
+                        # 내용 요약에 키워드가 있는지 확인
+                        if '영상_내용_종합_요약' in analysis_data and keyword_lower in analysis_data['영상_내용_종합_요약'].lower():
+                            is_related = True
+                            break
+                        
+                        # 핵심 키워드에 있는지 확인
+                        if '핵심_키워드' in analysis_data and isinstance(analysis_data['핵심_키워드'], list):
+                            for k in analysis_data['핵심_키워드']:
+                                if keyword_lower in k.lower():
+                                    is_related = True
+                                    break
+                        
+                        # 주식 종목 정보에 있는지 확인
+                        if '언급된_모든_주식_종목_상세_정보' in analysis_data and isinstance(analysis_data['언급된_모든_주식_종목_상세_정보'], list):
+                            for stock in analysis_data['언급된_모든_주식_종목_상세_정보']:
+                                if '회사명' in stock and keyword_lower in stock['회사명'].lower():
+                                    is_related = True
+                                    break
+                    
+                    if is_related:
+                        analysis_dict['analysis_data'] = analysis_data
+                        keyword_related_analyses.append(analysis_dict)
+                        
+                        # 제한된 수의 결과만 반환
+                        if len(keyword_related_analyses) >= limit:
+                            break
+                    
+                except Exception as e:
+                    print(f"분석 데이터 파싱 중 오류 발생: {e}")
+                    continue
+        
+        return keyword_related_analyses
+        
+    except Exception as e:
+        print(f"키워드 관련 상세 분석 정보 조회 중 오류 발생: {e}")
+        return []
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)
 initialize_db() 

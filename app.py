@@ -39,7 +39,7 @@ def sidebar_menu():
     st.sidebar.title("YouTube 자막 분석 시스템")
     menu = st.sidebar.radio(
         "메뉴 선택",
-        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스"]
+        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "상세 영상 분석"]
     )
     return menu
 
@@ -1109,6 +1109,168 @@ def display_latest_news():
         st.session_state.current_news = selected_news
         display_news(selected_news)
 
+# 상세 영상 분석 페이지
+def detailed_analysis_page():
+    st.title("상세 영상 분석")
+    
+    st.markdown("""
+    이 페이지에서는 등록된 채널의 최신 영상에 대한 상세 분석 정보를 제공합니다.
+    영상 내용, 주식 종목 정보, 경제 지표 등이 자세하게 분석됩니다.
+    """)
+    
+    # 키워드 기반 필터링 옵션
+    st.subheader("키워드 검색")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_keywords = st.text_input("관심 키워드로 검색 (쉼표로 구분)", placeholder="예: 금리, 테슬라, 애플")
+    
+    with col2:
+        hours = st.slider("최근 몇 시간", 1, 168, 72)  # 최대 7일(168시간)
+        search_button = st.button("검색")
+    
+    # 키워드 검색 버튼 클릭 시
+    if search_button and search_keywords:
+        keywords = [k.strip() for k in search_keywords.split(',') if k.strip()]
+        
+        if not keywords:
+            st.warning("검색할 키워드를 입력해주세요.")
+        else:
+            with st.spinner(f"키워드 '{', '.join(keywords)}'에 관련된 영상 분석을 검색하는 중..."):
+                from db_handler import get_recent_detailed_analysis_by_keywords
+                analysis_results = get_recent_detailed_analysis_by_keywords(keywords, hours=hours, limit=10)
+                
+                if analysis_results:
+                    st.session_state.keyword_analysis_results = analysis_results
+                    st.success(f"{len(analysis_results)}개의 관련 영상 분석을 찾았습니다!")
+                else:
+                    st.warning(f"키워드 '{', '.join(keywords)}'에 관련된 영상 분석을 찾지 못했습니다. 다른 키워드로 시도해보세요.")
+    
+    # 최신 분석 결과 목록 표시
+    if 'keyword_analysis_results' in st.session_state and st.session_state.keyword_analysis_results:
+        display_analysis_results(st.session_state.keyword_analysis_results)
+    else:
+        # 최신 분석 결과 가져오기
+        from db_handler import get_detailed_video_analysis
+        latest_analyses = get_detailed_video_analysis(limit=10)
+        
+        if latest_analyses:
+            st.subheader("최근 분석된 영상")
+            display_analysis_results(latest_analyses)
+        else:
+            st.info("아직 분석된 영상이 없습니다. 채널을 등록하고 데이터를 수집해보세요.")
+
+def display_analysis_results(analysis_results):
+    """분석 결과 목록을 표시합니다."""
+    # 분석 결과 선택 옵션
+    analysis_titles = [f"{result['video_title']} ({result['created_at'][:10]})" for result in analysis_results]
+    
+    selected_index = st.selectbox("분석 결과 선택", range(len(analysis_titles)), format_func=lambda i: analysis_titles[i])
+    selected_analysis = analysis_results[selected_index]
+    
+    # 선택된 분석 결과 표시
+    display_detailed_analysis(selected_analysis)
+
+def display_detailed_analysis(analysis):
+    """상세 분석 결과를 표시합니다."""
+    st.subheader(analysis['video_title'])
+    
+    # 영상 기본 정보
+    st.markdown(f"**분석 일시:** {analysis['created_at'][:19].replace('T', ' ')}")
+    st.markdown(f"**영상 링크:** [YouTube에서 보기]({analysis['video_url']})")
+    
+    # 분석 데이터 확인
+    if 'analysis_data' not in analysis or not analysis['analysis_data']:
+        st.warning("이 영상에 대한 상세 분석 데이터가 없습니다.")
+        return
+    
+    analysis_data = analysis['analysis_data']
+    
+    # 탭으로 정보 구분
+    tabs = st.tabs(["요약", "주식 종목", "경제 지표", "전문가 의견", "투자 전략"])
+    
+    # 요약 탭
+    with tabs[0]:
+        if '영상_내용_종합_요약' in analysis_data and analysis_data['영상_내용_종합_요약'] != "정보 없음":
+            st.markdown(analysis_data['영상_내용_종합_요약'])
+        else:
+            st.info("영상 내용 요약 정보가 없습니다.")
+        
+        # 핵심 주제 및 논점
+        if '핵심_주제_및_논점' in analysis_data and analysis_data['핵심_주제_및_논점'] != "정보 없음":
+            st.subheader("핵심 주제 및 논점")
+            
+            if isinstance(analysis_data['핵심_주제_및_논점'], list):
+                for point in analysis_data['핵심_주제_및_논점']:
+                    st.markdown(f"- {point}")
+            else:
+                st.markdown(analysis_data['핵심_주제_및_논점'])
+        
+        # 핵심 키워드
+        if '핵심_키워드' in analysis_data and analysis_data['핵심_키워드'] != "정보 없음":
+            st.subheader("핵심 키워드")
+            
+            if isinstance(analysis_data['핵심_키워드'], list):
+                # 키워드를 여러 열로 표시
+                cols = st.columns(3)
+                for i, keyword in enumerate(analysis_data['핵심_키워드']):
+                    col_idx = i % 3
+                    with cols[col_idx]:
+                        st.markdown(f"- {keyword}")
+            else:
+                st.markdown(analysis_data['핵심_키워드'])
+    
+    # 주식 종목 탭
+    with tabs[1]:
+        if '언급된_모든_주식_종목_상세_정보' in analysis_data and analysis_data['언급된_모든_주식_종목_상세_정보'] != "정보 없음":
+            stocks = analysis_data['언급된_모든_주식_종목_상세_정보']
+            
+            if isinstance(stocks, list) and stocks:
+                for i, stock in enumerate(stocks):
+                    with st.expander(f"{stock.get('회사명', '회사명 정보 없음')} {stock.get('티커_심볼', '')}", expanded=(i==0)):
+                        # 회사 정보
+                        if '회사명' in stock:
+                            st.markdown(f"**회사명:** {stock['회사명']}")
+                        
+                        # 티커 심볼
+                        if '티커_심볼' in stock and stock['티커_심볼'] != "정보 없음":
+                            st.markdown(f"**티커 심볼:** {stock['티커_심볼']}")
+                        
+                        # 언급된 맥락 및 내용
+                        if '언급된_맥락_및_내용' in stock and stock['언급된_맥락_및_내용'] != "정보 없음":
+                            st.markdown("**언급된 맥락 및 내용:**")
+                            st.markdown(stock['언급된_맥락_및_내용'])
+                        
+                        # 전망/예측
+                        if '전망/예측' in stock and stock['전망/예측'] != "정보 없음":
+                            st.markdown("**전망/예측:**")
+                            st.markdown(stock['전망/예측'])
+            else:
+                st.info("이 영상에서 언급된 주식 종목 정보가 없습니다.")
+        else:
+            st.info("이 영상에서 언급된 주식 종목 정보가 없습니다.")
+    
+    # 경제 지표 탭
+    with tabs[2]:
+        if '경제_지표_및_동향_종합_분석' in analysis_data and analysis_data['경제_지표_및_동향_종합_분석'] != "정보 없음":
+            st.markdown(analysis_data['경제_지표_및_동향_종합_분석'])
+        else:
+            st.info("이 영상에서 경제 지표 및 동향 분석 정보가 없습니다.")
+    
+    # 전문가 의견 탭
+    with tabs[3]:
+        if '전문가_의견이나_인용구' in analysis_data and analysis_data['전문가_의견이나_인용구'] != "정보 없음":
+            st.markdown(analysis_data['전문가_의견이나_인용구'])
+        else:
+            st.info("이 영상에서 전문가 의견이나 인용구 정보가 없습니다.")
+    
+    # 투자 전략 탭
+    with tabs[4]:
+        if '투자_전략이나_시사점' in analysis_data and analysis_data['투자_전략이나_시사점'] != "정보 없음":
+            st.markdown(analysis_data['투자_전략이나_시사점'])
+        else:
+            st.info("이 영상에서 투자 전략이나 시사점 정보가 없습니다.")
+
 # 메인 함수
 def main():
     # 세션 상태 초기화
@@ -1150,6 +1312,8 @@ def main():
         saved_reports_page()
     elif menu == "뉴스":
         news_page()
+    elif menu == "상세 영상 분석":
+        detailed_analysis_page()
 
 if __name__ == "__main__":
     main() 

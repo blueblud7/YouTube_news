@@ -31,7 +31,7 @@ from db_handler import (
     is_video_in_db,
     generate_economic_news_from_recent_videos
 )
-from llm_handler import summarize_transcript, analyze_transcript, analyze_transcript_with_type
+from llm_handler import summarize_transcript, analyze_transcript, analyze_transcript_with_type, analyze_transcript_for_economic_insights, create_detailed_video_summary
 
 # 구성 파일 경로
 CONFIG_FILE = "youtube_news_config.json"
@@ -77,61 +77,59 @@ def add_keyword(keyword):
     else:
         print(f"키워드 '{keyword}'은(는) 이미 모니터링 중입니다.")
 
-def process_video(video_id, analysis_types=None):
-    """비디오를 처리하고 데이터베이스에 저장합니다."""
-    if analysis_types is None:
-        analysis_types = ["summary"]  # 기본 분석 유형
-        
+def process_video(video_id, video_info, transcript, analysis_types=None):
+    """비디오 처리 및 분석 함수"""
+    from db_handler import save_video_data, save_summary_to_db
+    from llm_handler import summarize_transcript, analyze_transcript_with_type, analyze_transcript_for_economic_insights, create_detailed_video_summary
+    
     try:
-        # 비디오 정보 가져오기
-        video_info = get_info_by_url(f"https://www.youtube.com/watch?v={video_id}")
-        if not video_info or not video_info.get("id"):
-            print(f"비디오 ID {video_id}에서 정보를 가져오지 못했습니다.")
-            return False
-            
-        # 자막 추출
-        transcript, lang = get_video_transcript(video_id)
+        # 데이터베이스에 저장
+        if not save_video_data(video_info, transcript):
+            print(f"비디오 ID {video_id}는 이미 데이터베이스에 있습니다.")
         
-        # 저장
-        success = save_video_data(video_info, transcript)
+        # 분석 유형이 없으면 기본값 사용
+        if not analysis_types:
+            analysis_types = ["summary"]
         
-        # 자막 요약 (있는 경우에만)
-        if success and transcript:
+        # 각 분석 유형에 대해 처리
+        for analysis_type in analysis_types:
             try:
-                print(f"비디오 ID {video_id}에 대한 분석 수행 중... 분석 유형: {', '.join(analysis_types)}")
+                # 요약 생성
+                if analysis_type == "summary":
+                    summary = summarize_transcript(transcript, analysis_type=analysis_type)
+                else:
+                    summary = analyze_transcript_with_type(transcript, analysis_type)
                 
-                # 각 분석 유형별로 처리
-                for analysis_type in analysis_types:
-                    try:
-                        start_time = time.time()
-                        
-                        if analysis_type == "summary":
-                            # 자막 길이에 상관없이 청크로 나누어 처리
-                            result = summarize_transcript(transcript, max_length=500, analysis_type=analysis_type)
-                        else:
-                            # 다른 분석 유형 처리
-                            result = analyze_transcript_with_type(transcript, analysis_type)
-                        
-                        # 결과 출력 (일부만)
-                        process_time = time.time() - start_time
-                        if len(result) > 100:
-                            print(f"비디오 '{video_info.get('title')}' {analysis_type} 결과: {result[:100]}... (처리 시간: {process_time:.2f}초)")
-                        else:
-                            print(f"비디오 '{video_info.get('title')}' {analysis_type} 결과: {result} (처리 시간: {process_time:.2f}초)")
-                        
-                        # 데이터베이스에 결과 저장
-                        from db_handler import save_summary_to_db
-                        save_summary_to_db(video_id, analysis_type, result)
-                        
-                    except Exception as e:
-                        print(f"{analysis_type} 생성 중 오류 발생: {e}")
-                        
+                # 데이터베이스에 저장
+                save_summary_to_db(video_id, analysis_type, summary)
+                
             except Exception as e:
-                print(f"요약/분석 생성 중 오류 발생: {e}")
+                print(f"비디오 ID {video_id}의 {analysis_type} 분석 중 오류 발생: {e}")
         
-        return success
+        # 경제 및 주식 관련 상세 분석 수행
+        try:
+            # 경제 분석
+            economic_analysis = analyze_transcript_for_economic_insights(transcript, video_id, video_info.get('title', ''))
+            if economic_analysis:
+                from db_handler import save_analysis
+                save_analysis(video_id, 'analysis_economic', economic_analysis)
+                print(f"비디오 ID {video_id}의 경제 분석이 저장되었습니다.")
+            
+            # 상세 영상 분석
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            detailed_analysis = create_detailed_video_summary(transcript, video_id, video_info.get('title', ''), video_url)
+            if detailed_analysis:
+                from db_handler import save_detailed_video_analysis
+                save_detailed_video_analysis(video_id, video_info.get('title', ''), video_url, detailed_analysis)
+                print(f"비디오 ID {video_id}의 상세 분석이 저장되었습니다.")
+                
+        except Exception as e:
+            print(f"비디오 ID {video_id}의 상세 분석 중 오류 발생: {e}")
+        
+        return True
+        
     except Exception as e:
-        print(f"비디오 처리 중 오류 발생: {e}")
+        print(f"비디오 ID {video_id} 처리 중 오류 발생: {e}")
         return False
 
 def collect_data(analysis_types=None):
