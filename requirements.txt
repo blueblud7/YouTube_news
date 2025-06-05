@@ -1,0 +1,8 @@
+python-dotenv
+google-api-python-client
+google-auth-oauthlib
+youtube-transcript-api
+schedule
+openai==0.28.0
+streamlit>=1.28.0
+pandas>=1.5.0 
