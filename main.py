@@ -21,15 +21,17 @@ from youtube_handler import (
     get_info_by_url,
     search_videos_by_keyword,
     get_video_info,
-    get_video_transcript
+    get_video_transcript,
+    get_latest_videos_from_channel
 )
 from db_handler import (
-    initialize_db,
+    init_db,
     save_video_data,
     analyze_video,
     generate_report,
     is_video_in_db,
-    generate_economic_news_from_recent_videos
+    generate_economic_news_from_recent_videos,
+    is_video_processed
 )
 from llm_handler import summarize_transcript, analyze_transcript, analyze_transcript_with_type, analyze_transcript_for_economic_insights, create_detailed_video_summary
 

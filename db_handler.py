@@ -5,7 +5,7 @@ import os
 import json
 import logging
 
-from youtube_api import get_channel_info, get_latest_videos_from_channel
+from youtube_handler import get_channel_info, get_latest_videos_from_channel
 from llm_handler import analyze_transcript_for_economic_insights, create_detailed_video_summary, generate_news_by_keywords, extract_keywords, extract_sentiment, summarize_transcript
 
 # 로깅 설정
@@ -1442,4 +1442,4 @@ def get_recent_detailed_analysis_by_keywords(keywords, hours=72, limit=5):
         return []
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)
-initialize_db() 
+init_db() 
