@@ -7,14 +7,30 @@ YouTube 뉴스 자막 수집 및 요약 시스템
 """
 
 import os
-import time
+import sys
 import json
+import time
+import traceback
+from datetime import datetime, timedelta, timezone
 import schedule
+import threading
 import argparse
-from datetime import datetime
-from youtube_handler import get_info_by_url, get_video_transcript, extract_video_id, search_videos_by_keyword
-from db_handler import save_video_data, get_video_data, generate_report
-from llm_handler import summarize_transcript, analyze_transcript
+
+from config import load_config, save_config
+from youtube_handler import (
+    get_info_by_url,
+    search_videos_by_keyword,
+    get_video_info,
+    get_video_transcript
+)
+from db_handler import (
+    initialize_db,
+    save_video_data,
+    analyze_video,
+    generate_report,
+    is_video_in_db
+)
+from llm_handler import summarize_transcript, analyze_transcript, analyze_transcript_with_type
 
 # 구성 파일 경로
 CONFIG_FILE = "youtube_news_config.json"
@@ -144,133 +160,201 @@ def collect_data(analysis_types=None):
                 print(f"채널 URL {channel_url}에서 정보를 가져오지 못했습니다.")
                 continue
                 
-            # 채널에서 최근 비디오 검색
             channel_id = channel_info.get("id")
-            if not channel_id:
-                print(f"채널 ID를 찾을 수 없습니다: {channel_url}")
+            channel_title = channel_info.get("title")
+            
+            # 채널에서 비디오 검색
+            videos = search_videos_by_keyword("", channel_id=channel_id, max_results=15)
+            if not videos:
+                print(f"채널 '{channel_title}'에서 비디오를 찾지 못했습니다.")
                 continue
                 
-            print(f"채널 '{channel_info.get('title')}'에서 최근 비디오 검색 중...")
-            videos = search_videos_by_keyword("", channel_id=channel_id, max_results=5)
-            
-            # 각 비디오 처리
+            # 비디오 처리
             for video in videos:
-                video_id = video.get("video_id")
-                print(f"\n비디오 처리 중: {video.get('title')} (ID: {video_id})")
-                process_video(video_id, analysis_types)
+                video_id = video.get("id")
+                video_title = video.get("title")
+                
+                # 이미 데이터베이스에 있는지 확인
+                if is_video_in_db(video_id):
+                    print(f"비디오 '{video_title}' (ID: {video_id})는 이미 데이터베이스에 있으므로 건너뜁니다.")
+                    continue
+                
+                # 발행일 확인 (1주일 이내인지)
+                published_at = video.get("published_at")
+                
+                # 발행일을 datetime 객체로 변환 (문자열인 경우)
+                if isinstance(published_at, str):
+                    # ISO 형식 문자열을 datetime으로 변환
+                    if 'Z' in published_at:
+                        published_at = published_at.replace('Z', '+00:00')
+                    published_date = datetime.fromisoformat(published_at)
+                else:
+                    # 이미 datetime 객체인 경우
+                    published_date = published_at
+                
+                # 현재 시간을 timezone-aware로 생성 (UTC 기준)
+                now = datetime.now(timezone.utc)
+                
+                # published_date가 timezone-naive인 경우 UTC로 가정하여 timezone-aware로 변환
+                if published_date.tzinfo is None:
+                    published_date = published_date.replace(tzinfo=timezone.utc)
+                
+                # 1주일 전 시간 계산 (timezone-aware)
+                one_week_ago = now - timedelta(days=7)
+                
+                # 발행일이 1주일 이전인지 확인
+                if published_date < one_week_ago:
+                    print(f"비디오 '{video_title}'은(는) 1주일 이상 지난 영상이므로 건너뜁니다.")
+                    continue
+                
+                print(f"\n비디오 처리 중: {video_title} (ID: {video_id})")
+                
+                # 비디오 정보 가져오기
+                video_info = get_video_info(video_id)
+                if not video_info:
+                    print(f"비디오 ID {video_id}에 대한 정보를 가져오지 못했습니다.")
+                    continue
+                
+                # 자막 추출
+                transcript = get_video_transcript(video_id)
+                if not transcript:
+                    print(f"비디오 ID {video_id}에 대해 자막을 찾을 수 없습니다.")
+                
+                # 비디오 정보 저장
+                video_info["transcript"] = transcript
+                save_video_data(video_info, transcript)
+                
+                # 자막이 있는 경우에만 분석 수행
+                if transcript:
+                    for analysis_type in analysis_types:
+                        analyze_video(video_id, analysis_type)
                 
         except Exception as e:
-            print(f"채널 처리 중 오류 발생: {e}")
+            print(f"채널 {channel_url} 처리 중 오류 발생: {str(e)}")
+            traceback.print_exc()
     
-    # 키워드 처리
+    # 키워드 검색
     for keyword in config["keywords"]:
         try:
             print(f"\n>> 키워드 검색 중: '{keyword}'")
-            videos = search_videos_by_keyword(keyword, max_results=5)
-            
-            # 각 비디오 처리
+            videos = search_videos_by_keyword(keyword)
+            if not videos:
+                print(f"키워드 '{keyword}'로 비디오를 찾지 못했습니다.")
+                continue
+                
+            # 비디오 처리
             for video in videos:
-                video_id = video.get("video_id")
-                print(f"\n비디오 처리 중: {video.get('title')} (ID: {video_id})")
-                process_video(video_id, analysis_types)
+                video_id = video.get("id")
+                video_title = video.get("title")
+                
+                # 이미 데이터베이스에 있는지 확인
+                if is_video_in_db(video_id):
+                    print(f"비디오 '{video_title}' (ID: {video_id})는 이미 데이터베이스에 있으므로 건너뜁니다.")
+                    continue
+                
+                # 발행일 확인 (1주일 이내인지)
+                published_at = video.get("published_at")
+                
+                # 발행일을 datetime 객체로 변환 (문자열인 경우)
+                if isinstance(published_at, str):
+                    # ISO 형식 문자열을 datetime으로 변환
+                    if 'Z' in published_at:
+                        published_at = published_at.replace('Z', '+00:00')
+                    published_date = datetime.fromisoformat(published_at)
+                else:
+                    # 이미 datetime 객체인 경우
+                    published_date = published_at
+                
+                # 현재 시간을 timezone-aware로 생성 (UTC 기준)
+                now = datetime.now(timezone.utc)
+                
+                # published_date가 timezone-naive인 경우 UTC로 가정하여 timezone-aware로 변환
+                if published_date.tzinfo is None:
+                    published_date = published_date.replace(tzinfo=timezone.utc)
+                
+                # 1주일 전 시간 계산 (timezone-aware)
+                one_week_ago = now - timedelta(days=7)
+                
+                # 발행일이 1주일 이전인지 확인
+                if published_date < one_week_ago:
+                    print(f"비디오 '{video_title}'은(는) 1주일 이상 지난 영상이므로 건너뜁니다.")
+                    continue
+                
+                print(f"\n비디오 처리 중: {video_title} (ID: {video_id})")
+                
+                # 비디오 정보 가져오기
+                video_info = get_video_info(video_id)
+                if not video_info:
+                    print(f"비디오 ID {video_id}에 대한 정보를 가져오지 못했습니다.")
+                    continue
+                
+                # 자막 추출
+                transcript = get_video_transcript(video_id)
+                if not transcript:
+                    print(f"비디오 ID {video_id}에 대해 자막을 찾을 수 없습니다.")
+                
+                # 비디오 정보 저장
+                video_info["transcript"] = transcript
+                save_video_data(video_info, transcript)
+                
+                # 자막이 있는 경우에만 분석 수행
+                if transcript:
+                    for analysis_type in analysis_types:
+                        analyze_video(video_id, analysis_type)
                 
         except Exception as e:
-            print(f"키워드 검색 중 오류 발생: {e}")
+            print(f"키워드 {keyword} 처리 중 오류 발생: {str(e)}")
+            traceback.print_exc()
     
-    print(f"\n=== 데이터 수집 완료: {datetime.now().isoformat()} ===")
+    # 종료 시간 기록
+    end_time = datetime.now().isoformat()
+    print(f"\n=== 데이터 수집 완료: {end_time} ===")
     
-    # 수집 후 리포트 생성
-    generate_collection_report(start_time)
+    # 리포트 생성
+    print("\n=== 리포트 생성 시작 ===")
+    report_data = generate_report(hours=12)  # 최근 12시간 내 데이터로 리포트 생성
     
-    return True
-
-def generate_collection_report(since_timestamp):
-    """
-    데이터 수집 후 리포트를 생성하고 저장합니다.
+    # 리포트 저장
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    :param since_timestamp: 데이터 수집 시작 시간
-    """
-    try:
-        print(f"\n=== 리포트 생성 시작 ===")
-        # 리포트 생성
-        report_data = generate_report(since_timestamp=since_timestamp)
-        
-        # 리포트 저장 디렉토리 생성
-        reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
-        os.makedirs(reports_dir, exist_ok=True)
-        
-        # 리포트 파일명 생성 (현재 시간 기반)
-        report_filename = os.path.join(reports_dir, f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        
-        # 리포트 저장
-        with open(report_filename, 'w', encoding='utf-8') as f:
-            json.dump(report_data, f, ensure_ascii=False, indent=2)
-        
-        # 마크다운 리포트 생성
-        md_report = generate_markdown_report(report_data)
-        md_filename = os.path.join(reports_dir, f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
-        
-        with open(md_filename, 'w', encoding='utf-8') as f:
-            f.write(md_report)
-        
-        print(f"리포트가 생성되었습니다:")
-        print(f"- JSON: {report_filename}")
-        print(f"- 마크다운: {md_filename}")
-        print(f"총 {report_data['total_videos']}개의 새 비디오가 수집되었습니다.")
-        print(f"=== 리포트 생성 완료 ===\n")
-        
-        return True
-    except Exception as e:
-        print(f"리포트 생성 중 오류 발생: {e}")
-        return False
-
-def generate_markdown_report(report_data):
-    """
-    리포트 데이터를 마크다운 형식으로 변환합니다.
+    # JSON 형식으로 저장
+    json_path = os.path.join("reports", f"report_{timestamp}.json")
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report_data, f, ensure_ascii=False, indent=2)
     
-    :param report_data: 리포트 데이터
-    :return: 마크다운 문자열
-    """
-    # 리포트 헤더
-    md = f"# YouTube 뉴스 수집 리포트\n\n"
-    md += f"## 기본 정보\n\n"
-    md += f"- 생성 시간: {datetime.fromisoformat(report_data['generated_at']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-    md += f"- 데이터 수집 시작: {datetime.fromisoformat(report_data['since']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-    md += f"- 총 새 비디오 수: {report_data['total_videos']}개\n\n"
-    
-    # 채널별 요약
-    md += f"## 채널별 새 비디오\n\n"
-    
-    for channel, videos in report_data['channels'].items():
-        md += f"### {channel} ({len(videos)}개)\n\n"
+    # 마크다운 형식으로 저장
+    md_path = os.path.join("reports", f"report_{timestamp}.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(f"# 신규 콘텐츠 리포트 ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n\n")
+        f.write(f"## 개요\n")
+        f.write(f"- 생성 시간: {report_data['generated_at']}\n")
+        f.write(f"- 기간: {report_data['since']} 이후\n")
+        f.write(f"- 총 비디오 수: {report_data['total_videos']}개\n\n")
         
-        for video in videos:
-            md += f"#### {video['title']}\n\n"
-            published_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00'))
-            md += f"- 게시일: {published_date.strftime('%Y-%m-%d %H:%M')}\n"
-            md += f"- 조회수: {video['view_count']:,}\n"
-            md += f"- 자막 길이: {video['transcript_length']:,}자\n"
-            md += f"- URL: https://www.youtube.com/watch?v={video['id']}\n\n"
+        if report_data['total_videos'] > 0:
+            f.write(f"## 채널별 신규 콘텐츠\n\n")
             
-            # 요약 정보 가져오기
-            from db_handler import get_summaries_for_video
-            summaries = get_summaries_for_video(video['id'])
-            if summaries:
-                if 'summary' in summaries:
-                    md += f"**요약:** {summaries['summary']}\n\n"
-            
-            md += "---\n\n"
+            for channel, videos in report_data['channels'].items():
+                f.write(f"### {channel} ({len(videos)}개)\n\n")
+                
+                for video in videos:
+                    f.write(f"#### {video['title']}\n")
+                    f.write(f"- 게시일: {video['published_at']}\n")
+                    f.write(f"- 조회수: {video['view_count']}\n")
+                    f.write(f"- 링크: https://www.youtube.com/watch?v={video['id']}\n\n")
     
-    # 모든 비디오 목록
-    md += f"## 모든 새 비디오 목록\n\n"
-    md += "| 제목 | 채널 | 게시일 | 조회수 |\n"
-    md += "| ---- | ---- | ------ | ------ |\n"
+    print(f"리포트가 생성되었습니다:")
+    print(f"- JSON: {os.path.abspath(json_path)}")
+    print(f"- 마크다운: {os.path.abspath(md_path)}")
+    print(f"총 {report_data['total_videos']}개의 새 비디오가 수집되었습니다.")
+    print("=== 리포트 생성 완료 ===")
     
-    for video in report_data['videos']:
-        published_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00'))
-        md += f"| [{video['title']}](https://www.youtube.com/watch?v={video['id']}) | {video['channel_title']} | {published_date.strftime('%Y-%m-%d')} | {video['view_count']:,} |\n"
-    
-    return md
+    return {
+        "start_time": start_time,
+        "end_time": end_time,
+        "videos_count": report_data['total_videos']
+    }
 
 def run_scheduler(analysis_types=None):
     """스케줄러를 실행합니다."""

@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 import os
 
@@ -35,6 +35,27 @@ def initialize_db():
             created_at TEXT NOT NULL,
             FOREIGN KEY (video_id) REFERENCES videos (id),
             UNIQUE (video_id, summary_type)
+        )
+    """)
+    
+    # 채널 정보를 저장하는 테이블 추가
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            handle TEXT,
+            description TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    
+    # 키워드 정보를 저장하는 테이블 추가
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
         )
     """)
     
@@ -314,30 +335,365 @@ def generate_report(since_timestamp: str = None, hours: int = 12) -> Dict[str, A
     """
     if since_timestamp is None:
         # 현재 시간에서 지정된 시간을 뺌
-        since_time = datetime.now() - timedelta(hours=hours)
+        since_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         since_timestamp = since_time.isoformat()
+    else:
+        # since_timestamp에 시간대 정보가 없으면 UTC로 가정
+        if '+' not in since_timestamp and '-' not in since_timestamp[-6:] and 'Z' not in since_timestamp:
+            since_timestamp = datetime.fromisoformat(since_timestamp).replace(tzinfo=timezone.utc).isoformat()
+        elif 'Z' in since_timestamp:
+            since_timestamp = since_timestamp.replace('Z', '+00:00')
     
-    # 새 비디오 가져오기
-    new_videos = get_new_videos_since(since_timestamp)
+    # ISO 형식 문자열을 datetime 객체로 변환
+    since_datetime = datetime.fromisoformat(since_timestamp)
     
-    # 채널별 그룹화
-    channels = {}
-    for video in new_videos:
-        channel = video['channel_title']
-        if channel not in channels:
-            channels[channel] = []
-        channels[channel].append(video)
+    # 데이터베이스 연결
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # 지정된 시간 이후에 추가된 비디오 조회 (channels 테이블 JOIN 없이)
+    cursor.execute("""
+        SELECT *
+        FROM videos v
+        WHERE v.created_at > ?
+        ORDER BY v.published_at DESC
+    """, (since_timestamp,))
+    
+    videos_data = []
+    for row in cursor.fetchall():
+        video_data = dict(row)
+        
+        # 자막 길이 계산
+        transcript_length = len(video_data.get("transcript", "")) if video_data.get("transcript") else 0
+        video_data["transcript_length"] = transcript_length
+        
+        # 요약 정보 가져오기 (summaries 테이블 사용)
+        cursor.execute("""
+            SELECT summary_type, content
+            FROM summaries
+            WHERE video_id = ?
+        """, (video_data["id"],))
+        
+        summaries = {}
+        for analysis_row in cursor.fetchall():
+            summaries[analysis_row["summary_type"]] = analysis_row["content"]
+        
+        video_data["summaries"] = summaries
+        videos_data.append(video_data)
+    
+    # 채널별로 비디오 그룹화
+    channels_data = {}
+    for video in videos_data:
+        channel_title = video.get("channel_title", "알 수 없는 채널")
+        if channel_title not in channels_data:
+            channels_data[channel_title] = []
+        channels_data[channel_title].append({
+            "id": video.get("id"),
+            "title": video.get("title"),
+            "published_at": video.get("published_at"),
+            "view_count": video.get("view_count"),
+            "transcript_length": video.get("transcript_length"),
+            "summaries": video.get("summaries", {})
+        })
+    
+    conn.close()
     
     # 리포트 데이터 구성
-    report = {
-        'generated_at': datetime.now().isoformat(),
-        'since': since_timestamp,
-        'total_videos': len(new_videos),
-        'channels': channels,
-        'videos': new_videos
+    report_data = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "since": since_timestamp,
+        "hours": hours if since_timestamp is None else None,
+        "total_videos": len(videos_data),
+        "channels": channels_data,
+        "videos": [{
+            "id": v.get("id"),
+            "title": v.get("title"),
+            "channel_id": v.get("channel_id"),
+            "channel_title": v.get("channel_title"),
+            "published_at": v.get("published_at"),
+            "view_count": v.get("view_count")
+        } for v in videos_data]
     }
     
-    return report
+    return report_data
+
+def get_all_channels() -> List[Dict[str, Any]]:
+    """
+    저장된 모든 채널 목록을 가져옵니다.
+    
+    :return: 채널 정보 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, channel_id, title, handle, description, created_at
+        FROM channels
+        ORDER BY title
+    """)
+    
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return results
+
+def add_channel(channel_id: str, title: str, handle: str = None, description: str = None) -> bool:
+    """
+    새 채널을 추가합니다.
+    
+    :param channel_id: 채널 ID
+    :param title: 채널 제목
+    :param handle: 채널 핸들 (없으면 None)
+    :param description: 채널 설명 (없으면 None)
+    :return: 성공 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 이미 존재하는 채널인지 확인
+        cursor.execute("SELECT id FROM channels WHERE channel_id = ?", (channel_id,))
+        if cursor.fetchone():
+            print(f"채널 ID {channel_id}는 이미 저장되었습니다.")
+            conn.close()
+            return False
+        
+        # 새 채널 추가
+        cursor.execute("""
+            INSERT INTO channels (channel_id, title, handle, description, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (channel_id, title, handle, description, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        print(f"채널 '{title}'을(를) 추가했습니다.")
+        return True
+    except Exception as e:
+        print(f"채널 추가 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def delete_channel(channel_id: str) -> bool:
+    """
+    채널을 삭제합니다.
+    
+    :param channel_id: 삭제할 채널 ID
+    :return: 성공 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 채널이 존재하는지 확인
+        cursor.execute("SELECT id FROM channels WHERE channel_id = ?", (channel_id,))
+        if not cursor.fetchone():
+            print(f"채널 ID {channel_id}가 존재하지 않습니다.")
+            conn.close()
+            return False
+        
+        # 채널 삭제
+        cursor.execute("DELETE FROM channels WHERE channel_id = ?", (channel_id,))
+        
+        conn.commit()
+        conn.close()
+        print(f"채널 ID {channel_id}을(를) 삭제했습니다.")
+        return True
+    except Exception as e:
+        print(f"채널 삭제 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def search_channels_by_keyword(keyword: str) -> List[Dict[str, Any]]:
+    """
+    키워드로 채널을 검색합니다.
+    
+    :param keyword: 검색 키워드
+    :return: 채널 정보 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, channel_id, title, handle, description, created_at
+        FROM channels
+        WHERE title LIKE ? OR description LIKE ?
+        ORDER BY title
+    """, (f'%{keyword}%', f'%{keyword}%'))
+    
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return results
+
+def get_all_keywords() -> List[Dict[str, Any]]:
+    """
+    저장된 모든 키워드 목록을 가져옵니다.
+    
+    :return: 키워드 정보 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, keyword, created_at
+        FROM keywords
+        ORDER BY keyword
+    """)
+    
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return results
+
+def add_keyword(keyword: str) -> bool:
+    """
+    새 키워드를 추가합니다.
+    
+    :param keyword: 키워드
+    :return: 성공 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 이미 존재하는 키워드인지 확인
+        cursor.execute("SELECT id FROM keywords WHERE keyword = ?", (keyword,))
+        if cursor.fetchone():
+            print(f"키워드 '{keyword}'는 이미 저장되었습니다.")
+            conn.close()
+            return False
+        
+        # 새 키워드 추가
+        cursor.execute("""
+            INSERT INTO keywords (keyword, created_at)
+            VALUES (?, ?)
+        """, (keyword, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        print(f"키워드 '{keyword}'을(를) 추가했습니다.")
+        return True
+    except Exception as e:
+        print(f"키워드 추가 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def delete_keyword(keyword_id: int) -> bool:
+    """
+    키워드를 삭제합니다.
+    
+    :param keyword_id: 삭제할 키워드 ID
+    :return: 성공 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 키워드가 존재하는지 확인
+        cursor.execute("SELECT id FROM keywords WHERE id = ?", (keyword_id,))
+        if not cursor.fetchone():
+            print(f"키워드 ID {keyword_id}가 존재하지 않습니다.")
+            conn.close()
+            return False
+        
+        # 키워드 삭제
+        cursor.execute("DELETE FROM keywords WHERE id = ?", (keyword_id,))
+        
+        conn.commit()
+        conn.close()
+        print(f"키워드 ID {keyword_id}을(를) 삭제했습니다.")
+        return True
+    except Exception as e:
+        print(f"키워드 삭제 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def search_videos_by_keyword(keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    제목이나 자막에 특정 키워드가 포함된 비디오 목록을 가져옵니다.
+    
+    :param keyword: 검색 키워드
+    :param limit: 최대 비디오 수
+    :return: 비디오 정보 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    query = """
+        SELECT v.id, v.title, v.channel_title, v.published_at, v.view_count, 
+               length(v.transcript) as transcript_length,
+               (SELECT COUNT(*) FROM summaries s WHERE s.video_id = v.id) as analysis_count
+        FROM videos v
+        WHERE (v.title LIKE ? OR v.transcript LIKE ?) AND v.transcript IS NOT NULL
+        ORDER BY v.published_at DESC
+        LIMIT ?
+    """
+    
+    cursor.execute(query, (f'%{keyword}%', f'%{keyword}%', limit))
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return results
+
+def is_video_in_db(video_id: str) -> bool:
+    """
+    비디오 ID가 데이터베이스에 있는지 확인합니다.
+    
+    :param video_id: 비디오 ID
+    :return: 존재 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM videos WHERE id = ?", (video_id,))
+    result = cursor.fetchone() is not None
+    conn.close()
+    return result
+
+def analyze_video(video_id: str, analysis_type: str) -> bool:
+    """
+    비디오를 분석하고 결과를 데이터베이스에 저장합니다.
+    
+    :param video_id: 비디오 ID
+    :param analysis_type: 분석 유형
+    :return: 성공 여부
+    """
+    from llm_handler import summarize_transcript, analyze_transcript_with_type
+    
+    try:
+        # 비디오 정보 가져오기
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT transcript FROM videos WHERE id = ?", (video_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result or not result[0]:
+            print(f"비디오 ID {video_id}에 대한 자막이 없습니다.")
+            return False
+        
+        transcript = result[0]
+        
+        # 분석 수행
+        if analysis_type == "summary":
+            result_text = summarize_transcript(transcript, analysis_type=analysis_type)
+        else:
+            result_text = analyze_transcript_with_type(transcript, analysis_type)
+        
+        # 결과 저장
+        return save_summary_to_db(video_id, analysis_type, result_text)
+    
+    except Exception as e:
+        print(f"비디오 분석 중 오류 발생: {e}")
+        return False
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)
 initialize_db() 
