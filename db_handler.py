@@ -70,7 +70,18 @@ def initialize_db():
             video_ids TEXT,
             style TEXT DEFAULT 'basic',
             word_count INTEGER DEFAULT 1000,
-            language TEXT DEFAULT 'ko'
+            language TEXT DEFAULT 'ko',
+            keywords TEXT
+        )
+    """)
+    
+    # 추출된 키워드를 저장하는 테이블 추가
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS extracted_keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (keyword)
         )
     """)
     
@@ -710,7 +721,7 @@ def analyze_video(video_id: str, analysis_type: str) -> bool:
         print(f"비디오 분석 중 오류 발생: {e}")
         return False
 
-def save_news_article(title: str, content: str, news_type: str = "economic", video_ids: List[str] = None, style: str = "basic", word_count: int = 1000, language: str = "ko") -> bool:
+def save_news_article(title: str, content: str, news_type: str = "economic", video_ids: List[str] = None, style: str = "basic", word_count: int = 1000, language: str = "ko", keywords: List[str] = None) -> bool:
     """
     뉴스 사설을 데이터베이스에 저장합니다.
     
@@ -721,6 +732,7 @@ def save_news_article(title: str, content: str, news_type: str = "economic", vid
     :param style: 리포트 스타일 (basic, concise, editorial, news, research)
     :param word_count: 글자수
     :param language: 언어 (ko, en)
+    :param keywords: 사용된 키워드 목록
     :return: 성공 여부
     """
     conn = sqlite3.connect(DB_PATH)
@@ -730,45 +742,40 @@ def save_news_article(title: str, content: str, news_type: str = "economic", vid
         # 비디오 ID 목록을 쉼표로 구분된 문자열로 변환
         video_ids_str = ",".join(video_ids) if video_ids else None
         
-        # 테이블에 style, word_count, language 필드가 존재하는지 확인
+        # 키워드 목록을 쉼표로 구분된 문자열로 변환
+        keywords_str = ",".join(keywords) if keywords else None
+        
+        # 테이블에 필요한 필드가 존재하는지 확인
         cursor.execute("PRAGMA table_info(news)")
         columns = [column[1] for column in cursor.fetchall()]
         
-        if all(field in columns for field in ['style', 'word_count', 'language']):
-            # 새 필드가 있는 경우 모든 필드를 포함하여 뉴스 사설 저장
-            cursor.execute("""
-                INSERT INTO news (title, content, news_type, created_at, video_ids, style, word_count, language)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                title,
-                content,
-                news_type,
-                datetime.now().isoformat(),
-                video_ids_str,
-                style,
-                word_count,
-                language
-            ))
-        else:
-            # 기존 테이블 구조에 맞게 저장
-            cursor.execute("""
-                INSERT INTO news (title, content, news_type, created_at, video_ids)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                title,
-                content,
-                news_type,
-                datetime.now().isoformat(),
-                video_ids_str
-            ))
-            
-            # 필요한 필드 추가
-            for field, default in [('style', "'basic'"), ('word_count', "1000"), ('language', "'ko'")]:
-                if field not in columns:
-                    try:
-                        cursor.execute(f"ALTER TABLE news ADD COLUMN {field} {get_field_type(field)} DEFAULT {default}")
-                    except sqlite3.OperationalError:
-                        print(f"필드 {field}를 추가하는데 실패했습니다. 이미 존재할 수 있습니다.")
+        # 모든 필드가 있는지 확인
+        required_fields = ['style', 'word_count', 'language', 'keywords']
+        missing_fields = [field for field in required_fields if field not in columns]
+        
+        # 누락된 필드가 있으면 추가
+        for field in missing_fields:
+            if field == 'keywords':
+                cursor.execute("ALTER TABLE news ADD COLUMN keywords TEXT")
+            elif field not in columns:
+                default_value = "'basic'" if field == 'style' else "1000" if field == 'word_count' else "'ko'" if field == 'language' else "NULL"
+                cursor.execute(f"ALTER TABLE news ADD COLUMN {field} {get_field_type(field)} DEFAULT {default_value}")
+        
+        # 모든 필드를 포함하여 뉴스 사설 저장
+        cursor.execute("""
+            INSERT INTO news (title, content, news_type, created_at, video_ids, style, word_count, language, keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            title,
+            content,
+            news_type,
+            datetime.now().isoformat(),
+            video_ids_str,
+            style,
+            word_count,
+            language,
+            keywords_str
+        ))
         
         conn.commit()
         conn.close()
@@ -813,6 +820,8 @@ def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, An
             fields += ", word_count"
         if 'language' in columns:
             fields += ", language"
+        if 'keywords' in columns:
+            fields += ", keywords"
         
         if news_type:
             cursor.execute(f"""
@@ -855,6 +864,9 @@ def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, An
                 field_index += 1
             if 'language' in columns and field_index < len(row):
                 news_item["language"] = row[field_index]
+                field_index += 1
+            if 'keywords' in columns and field_index < len(row):
+                news_item["keywords"] = row[field_index].split(",") if row[field_index] else []
             
             news_list.append(news_item)
         
@@ -889,6 +901,8 @@ def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
             fields += ", word_count"
         if 'language' in columns:
             fields += ", language"
+        if 'keywords' in columns:
+            fields += ", keywords"
         
         cursor.execute(f"""
             SELECT {fields}
@@ -922,6 +936,9 @@ def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
             field_index += 1
         if 'language' in columns and field_index < len(row):
             news_item["language"] = row[field_index]
+            field_index += 1
+        if 'keywords' in columns and field_index < len(row):
+            news_item["keywords"] = row[field_index].split(",") if row[field_index] else []
         
         return news_item
     except Exception as e:
@@ -1008,6 +1025,233 @@ def generate_economic_news_from_recent_videos(hours: int = 24, style: str = "bas
     except Exception as e:
         print(f"경제 뉴스 사설 생성 중 오류 발생: {e}")
         conn.close()
+        return None
+
+def extract_keywords_from_recent_videos(hours: int = 24, max_keywords: int = 15) -> List[str]:
+    """
+    최근 지정된 시간 내의 비디오 자막을 사용하여 키워드를 추출합니다.
+    
+    :param hours: 몇 시간 이내의 비디오를 대상으로 할지 (기본값 24시간)
+    :param max_keywords: 추출할 최대 키워드 수
+    :return: 추출된 키워드 목록
+    """
+    from llm_handler import extract_keywords_from_transcripts
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 최근 비디오 조회 (timestamp를 datetime으로 비교)
+        since_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor.execute("""
+            SELECT id, title, transcript
+            FROM videos
+            WHERE created_at > ? AND transcript IS NOT NULL
+            ORDER BY created_at DESC
+        """, (since_time,))
+        
+        rows = cursor.fetchall()
+        
+        if not rows:
+            print(f"최근 {hours}시간 내에 자막이 있는 비디오가 없습니다.")
+            conn.close()
+            return []
+        
+        # 비디오 정보 및 자막 추출
+        transcripts = []
+        
+        for row in rows:
+            transcript = row[2]
+            
+            if transcript:
+                transcripts.append(transcript)
+        
+        conn.close()
+        
+        if not transcripts:
+            print("자막이 있는 비디오가 없습니다.")
+            return []
+        
+        # 키워드 추출
+        keywords = extract_keywords_from_transcripts(transcripts, max_keywords)
+        
+        # 추출된 키워드를 데이터베이스에 저장
+        save_extracted_keywords(keywords)
+        
+        return keywords
+    except Exception as e:
+        print(f"키워드 추출 중 오류 발생: {e}")
+        conn.close()
+        return []
+
+def save_extracted_keywords(keywords: List[str]) -> bool:
+    """
+    추출된 키워드를 데이터베이스에 저장합니다.
+    
+    :param keywords: 키워드 목록
+    :return: 성공 여부
+    """
+    if not keywords:
+        return False
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 현재 시간
+        now = datetime.now().isoformat()
+        
+        # 키워드 저장
+        for keyword in keywords:
+            try:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO extracted_keywords (keyword, created_at)
+                    VALUES (?, ?)
+                """, (keyword, now))
+            except Exception as e:
+                print(f"키워드 '{keyword}' 저장 중 오류 발생: {e}")
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"키워드 저장 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def get_all_extracted_keywords(limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    저장된 모든 추출된 키워드를 가져옵니다.
+    
+    :param limit: 최대 결과 수
+    :return: 키워드 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT id, keyword, created_at
+            FROM extracted_keywords
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        # 결과를 딕셔너리 목록으로 변환
+        keywords = []
+        for row in rows:
+            keywords.append({
+                "id": row[0],
+                "keyword": row[1],
+                "created_at": row[2]
+            })
+        
+        return keywords
+    except Exception as e:
+        print(f"키워드 조회 중 오류 발생: {e}")
+        conn.close()
+        return []
+
+def generate_news_by_keywords(keywords: List[str], hours: int = 24, style: str = "basic", word_count: int = 1000, language: str = "ko") -> Optional[Dict[str, Any]]:
+    """
+    선택된 키워드에 초점을 맞춰 경제 뉴스 사설을 생성합니다.
+    
+    :param keywords: 초점을 맞출 키워드 목록
+    :param hours: 몇 시간 이내의 비디오를 대상으로 할지 (기본값 24시간)
+    :param style: 리포트 스타일 (basic, concise, editorial, news, research)
+    :param word_count: 원하는 글자수 (대략적인 값)
+    :param language: 언어 선택 (ko: 한국어, en: 영어)
+    :return: 생성된 뉴스 사설 정보 (성공한 경우) 또는 None (실패한 경우)
+    """
+    from llm_handler import generate_news_by_keywords
+    
+    if not keywords:
+        print("키워드가 없어 뉴스를 생성할 수 없습니다.")
+        return None
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 최근 비디오 조회 (timestamp를 datetime으로 비교)
+        since_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor.execute("""
+            SELECT id, title, transcript
+            FROM videos
+            WHERE created_at > ? AND transcript IS NOT NULL
+            ORDER BY created_at DESC
+        """, (since_time,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            print(f"최근 {hours}시간 내에 자막이 있는 비디오가 없습니다.")
+            return None
+        
+        # 비디오 정보 및 자막 추출
+        video_ids = []
+        transcripts = []
+        
+        for row in rows:
+            video_id = row[0]
+            transcript = row[2]
+            
+            if transcript:
+                video_ids.append(video_id)
+                transcripts.append(transcript)
+        
+        if not transcripts:
+            print("자막이 있는 비디오가 없습니다.")
+            return None
+        
+        # 키워드 기반 뉴스 사설 생성
+        news_content = generate_news_by_keywords(
+            transcripts,
+            keywords,
+            style=style,
+            word_count=word_count,
+            language=language
+        )
+        
+        # 제목 추출 (첫 번째 줄을 제목으로 사용)
+        lines = news_content.split('\n')
+        title = lines[0].replace("#", "").strip()
+        if not title or len(title) < 5:
+            # 키워드를 사용하여 제목 생성
+            keywords_str = ", ".join(keywords)
+            title = f"{keywords_str}에 관한 경제/주식 전망"
+        
+        # 뉴스 사설 저장
+        if save_news_article(
+            title, 
+            news_content, 
+            "economic", 
+            video_ids, 
+            style=style, 
+            word_count=word_count, 
+            language=language,
+            keywords=keywords
+        ):
+            # 저장된 뉴스 사설 정보 반환
+            return {
+                "title": title,
+                "content": news_content,
+                "news_type": "economic",
+                "created_at": datetime.now().isoformat(),
+                "video_ids": video_ids,
+                "style": style,
+                "language": language,
+                "keywords": keywords
+            }
+        else:
+            return None
+    except Exception as e:
+        print(f"키워드 기반 뉴스 사설 생성 중 오류 발생: {e}")
         return None
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)

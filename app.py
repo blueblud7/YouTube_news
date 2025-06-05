@@ -899,69 +899,158 @@ def news_page():
     
     st.markdown("""
     이 페이지에서는 수집된 YouTube 자막을 기반으로 경제 전문가가 작성한 것 같은 경제 및 주식 시장 전망 사설을 제공합니다.
-    스케줄러가 실행될 때마다 최신 자막을 분석하여 새로운 뉴스 사설을 생성합니다.
+    키워드를 추출하여 선택한 키워드에 초점을 맞춘 뉴스를 생성할 수 있습니다.
     """)
     
-    # 수동으로 뉴스 생성 옵션
-    with st.expander("새 뉴스 사설 생성"):
-        # 시간 범위 선택
-        hours = st.slider("몇 시간 이내의 비디오를 분석할지 선택", 1, 72, 24)
-        
-        # 스타일, 글자수, 언어 선택 옵션 추가
-        col1, col2 = st.columns(2)
+    # 키워드 추출 및 뉴스 생성 옵션
+    with st.expander("키워드 추출 및 뉴스 생성", expanded=True):
+        col1, col2 = st.columns([3, 1])
         with col1:
-            style = st.selectbox(
-                "리포트 스타일", 
-                ["basic", "concise", "editorial", "news", "research"],
-                format_func=lambda x: {
-                    "basic": "기본", 
-                    "concise": "간결", 
-                    "editorial": "사설", 
-                    "news": "신문기사", 
-                    "research": "딥리서치"
-                }.get(x, x)
-            )
+            hours = st.slider("몇 시간 이내의 비디오를 분석할지 선택", 1, 72, 24)
             
-            word_count = st.number_input(
-                "글자수 (자)", 
-                min_value=500, 
-                max_value=3000, 
-                value=1000, 
-                step=100
-            )
-        
         with col2:
-            language = st.selectbox(
-                "언어", 
-                ["ko", "en"],
-                format_func=lambda x: {"ko": "한국어", "en": "영어"}.get(x, x)
-            )
-            
-            generate_button = st.button("뉴스 생성")
+            extract_button = st.button("키워드 추출")
         
-        if generate_button:
-            with st.spinner("최근 영상의 자막을 분석하여 경제/주식 전망 뉴스를 생성하는 중..."):
-                from db_handler import generate_economic_news_from_recent_videos
-                news_article = generate_economic_news_from_recent_videos(
-                    hours=hours,
-                    style=style,
-                    word_count=word_count,
-                    language=language
-                )
+        # 키워드 추출 버튼 클릭 시
+        if extract_button:
+            with st.spinner("최근 영상의 자막을 분석하여 경제/주식 관련 키워드를 추출하는 중..."):
+                from db_handler import extract_keywords_from_recent_videos
+                keywords = extract_keywords_from_recent_videos(hours=hours)
                 
-                if news_article:
-                    st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")
+                if keywords:
+                    st.session_state.extracted_keywords = keywords
+                    st.success(f"{len(keywords)}개의 키워드가 추출되었습니다!")
                 else:
-                    st.error("뉴스 생성에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
+                    st.error("키워드 추출에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
+        
+        # 세션에 저장된 키워드가 있으면 표시
+        if 'extracted_keywords' in st.session_state and st.session_state.extracted_keywords:
+            keywords = st.session_state.extracted_keywords
+            
+            st.subheader("추출된 키워드")
+            
+            # 선택한 키워드 상태 관리
+            if 'selected_keywords' not in st.session_state:
+                st.session_state.selected_keywords = []
+            
+            # 키워드 선택 UI (멀티셀렉트 대신 체크박스 목록 사용)
+            keyword_cols = st.columns(3)  # 3개의 열로 키워드 표시
+            for i, keyword in enumerate(keywords):
+                col_index = i % 3
+                with keyword_cols[col_index]:
+                    is_selected = keyword in st.session_state.selected_keywords
+                    if st.checkbox(keyword, value=is_selected, key=f"keyword_{i}"):
+                        if keyword not in st.session_state.selected_keywords:
+                            st.session_state.selected_keywords.append(keyword)
+                    else:
+                        if keyword in st.session_state.selected_keywords:
+                            st.session_state.selected_keywords.remove(keyword)
+            
+            # 선택된 키워드가 있으면 뉴스 생성 옵션 표시
+            if st.session_state.selected_keywords:
+                st.subheader("뉴스 생성 옵션")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    style = st.selectbox(
+                        "리포트 스타일", 
+                        ["basic", "concise", "editorial", "news", "research"],
+                        format_func=lambda x: {
+                            "basic": "기본", 
+                            "concise": "간결", 
+                            "editorial": "사설", 
+                            "news": "신문기사", 
+                            "research": "딥리서치"
+                        }.get(x, x)
+                    )
+                    
+                    word_count = st.number_input(
+                        "글자수 (자)", 
+                        min_value=500, 
+                        max_value=3000, 
+                        value=1000, 
+                        step=100
+                    )
+                
+                with col2:
+                    language = st.selectbox(
+                        "언어", 
+                        ["ko", "en"],
+                        format_func=lambda x: {"ko": "한국어", "en": "영어"}.get(x, x)
+                    )
+                    
+                    generate_button = st.button("뉴스 생성", key="generate_by_keywords")
+                
+                if generate_button:
+                    with st.spinner(f"선택한 키워드 '{', '.join(st.session_state.selected_keywords)}'에 대한 뉴스를 생성하는 중..."):
+                        from db_handler import generate_news_by_keywords
+                        news_article = generate_news_by_keywords(
+                            keywords=st.session_state.selected_keywords,
+                            hours=hours,
+                            style=style,
+                            word_count=word_count,
+                            language=language
+                        )
+                        
+                        if news_article:
+                            st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")
+                            # 새로 생성된 뉴스를 세션에 저장하여 바로 표시
+                            st.session_state.current_news = news_article
+                        else:
+                            st.error("뉴스 생성에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
     
-    # 최신 뉴스 목록 표시
+    # 최신 뉴스 목록 또는 현재 뉴스 표시
+    if 'current_news' in st.session_state and st.session_state.current_news:
+        # 현재 선택된 뉴스 표시
+        display_news(st.session_state.current_news)
+    else:
+        # 최신 뉴스 목록 표시
+        display_latest_news()
+
+def display_news(news_article):
+    """뉴스 사설을 표시합니다."""
+    st.subheader("현재 뉴스")
+    
+    # 뉴스 제목 및 정보
+    st.markdown(f"## {news_article['title']}")
+    st.markdown(f"*생성일: {news_article['created_at'][:10]}*")
+    
+    # 키워드 표시
+    if 'keywords' in news_article and news_article['keywords']:
+        keywords_str = ", ".join(news_article['keywords'])
+        st.markdown(f"**키워드:** {keywords_str}")
+    
+    # 내용 표시 (마크다운 형식 지원)
+    st.markdown(news_article['content'])
+    
+    # 다른 뉴스 보기 버튼
+    if st.button("다른 뉴스 보기"):
+        st.session_state.current_news = None
+        st.rerun()
+    
+    # 출처 비디오 정보
+    if 'video_ids' in news_article and news_article['video_ids']:
+        with st.expander("분석에 사용된 영상"):
+            # 비디오 정보 가져오기
+            conn = sqlite3.connect(DB_PATH)
+            for video_id in news_article['video_ids']:
+                cursor = conn.cursor()
+                cursor.execute("SELECT title, channel_title, url FROM videos WHERE id = ?", (video_id,))
+                video_info = cursor.fetchone()
+                
+                if video_info:
+                    st.markdown(f"- [{video_info[0]} - {video_info[1]}]({video_info[2]})")
+            conn.close()
+
+def display_latest_news():
+    """최신 뉴스 목록을 표시합니다."""
     st.subheader("최신 경제/주식 전망 뉴스")
     
     from db_handler import get_latest_news
     news_articles = get_latest_news(news_type="economic", limit=10)
     
     if not news_articles:
-        st.info("아직 생성된 뉴스 사설이 없습니다. '새 뉴스 사설 생성' 버튼을 눌러 첫 번째 뉴스를 생성해 보세요.")
+        st.info("아직 생성된 뉴스 사설이 없습니다. 키워드를 추출하고 뉴스를 생성해 보세요.")
     else:
         # 뉴스 선택 탭
         if len(news_articles) > 1:
@@ -971,26 +1060,9 @@ def news_page():
         else:
             selected_news = news_articles[0]
         
-        # 선택된 뉴스 표시
-        st.markdown(f"## {selected_news['title']}")
-        st.markdown(f"*생성일: {selected_news['created_at'][:10]}*")
-        
-        # 내용 표시 (마크다운 형식 지원)
-        st.markdown(selected_news['content'])
-        
-        # 출처 비디오 정보
-        if selected_news['video_ids']:
-            with st.expander("분석에 사용된 영상"):
-                # 비디오 정보 가져오기
-                conn = sqlite3.connect(DB_PATH)
-                for video_id in selected_news['video_ids']:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT title, channel_title, url FROM videos WHERE id = ?", (video_id,))
-                    video_info = cursor.fetchone()
-                    
-                    if video_info:
-                        st.markdown(f"- [{video_info[0]} - {video_info[1]}]({video_info[2]})")
-                conn.close()
+        # 선택된 뉴스를 세션에 저장하고 표시
+        st.session_state.current_news = selected_news
+        display_news(selected_news)
 
 # 메인 함수
 def main():

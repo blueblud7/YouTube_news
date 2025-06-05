@@ -1,7 +1,7 @@
 import os
 import openai
 from config import get_openai_api_key
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 # OpenAI API 키 설정
 openai.api_key = get_openai_api_key()
@@ -259,4 +259,127 @@ def generate_economic_news(transcripts: List[str], style: str = "basic", word_co
         return response.choices[0].message["content"].strip()
     except Exception as e:
         print(f"경제 뉴스 생성 중 오류 발생: {e}")
-        return f"경제 뉴스 생성 중 오류가 발생했습니다: {str(e)}" 
+        return f"경제 뉴스 생성 중 오류가 발생했습니다: {str(e)}"
+
+def extract_keywords_from_transcripts(transcripts: List[str], max_keywords: int = 10) -> List[str]:
+    """
+    여러 영상의 자막에서 주요 키워드를 추출합니다.
+    
+    :param transcripts: 여러 영상의 자막 목록
+    :param max_keywords: 추출할 최대 키워드 수
+    :return: 키워드 목록
+    """
+    if not transcripts:
+        return []
+    
+    if not openai.api_key:
+        return []
+    
+    # 자막들을 통합하고 길이 제한을 위해 각 자막에서 일부만 사용
+    combined_text = ""
+    max_length_per_transcript = 3000  # 각 자막당 최대 길이
+    
+    for i, transcript in enumerate(transcripts):
+        if transcript:
+            # 각 자막의 처음 일부분만 사용
+            truncated_transcript = transcript[:max_length_per_transcript]
+            combined_text += f"\n\n자막 {i+1}:\n{truncated_transcript}"
+    
+    if not combined_text:
+        return []
+    
+    try:
+        # 키워드 추출 프롬프트
+        system_prompt = "당신은 텍스트에서 핵심 키워드를 추출하는 전문가입니다. 주어진 텍스트에서 가장 중요하고 관련성 높은 경제/주식 관련 키워드를 추출해주세요."
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"다음 자막에서 중요한 경제/주식 관련 키워드를 {max_keywords}개 추출해주세요. 쉼표로 구분된 목록으로 키워드만 반환해주세요. 키워드는 되도록 명사 형태로 1-3단어 정도로 간결하게 표현해주세요.\n\n{combined_text}"}
+            ],
+            max_tokens=300,
+            temperature=0.3
+        )
+        
+        # 결과에서 키워드 추출
+        keywords_text = response.choices[0].message["content"].strip()
+        
+        # 결과 파싱 (쉼표로 구분된 키워드 목록 가정)
+        keywords = []
+        for keyword in keywords_text.split(','):
+            keyword = keyword.strip()
+            # 숫자 제거, 줄바꿈 제거
+            keyword = keyword.replace('\n', ' ').replace('*', '').replace('#', '')
+            # 빈 키워드가 아니면 추가
+            if keyword and len(keyword) > 1:
+                keywords.append(keyword)
+        
+        # 중복 제거 및 최대 개수 제한
+        unique_keywords = list(dict.fromkeys(keywords))[:max_keywords]
+        
+        return unique_keywords
+    except Exception as e:
+        print(f"키워드 추출 중 오류 발생: {e}")
+        return []
+
+def generate_news_by_keywords(transcripts: List[str], keywords: List[str], style: str = "basic", word_count: int = 1000, language: str = "ko") -> str:
+    """
+    선택된 키워드에 초점을 맞춰 경제/주식 전망 뉴스를 생성합니다.
+    
+    :param transcripts: 여러 영상의 자막 목록
+    :param keywords: 초점을 맞출 키워드 목록
+    :param style: 리포트 스타일 (basic, concise, editorial, news, research)
+    :param word_count: 원하는 글자수 (대략적인 값)
+    :param language: 언어 선택 (ko: 한국어, en: 영어)
+    :return: 경제/주식 전망 뉴스
+    """
+    if not transcripts or not keywords:
+        return "분석할 자막이나 키워드가 없어 뉴스를 생성할 수 없습니다."
+    
+    if not openai.api_key:
+        return "OpenAI API 키가 설정되지 않아 뉴스를 생성할 수 없습니다."
+    
+    # 자막들을 통합하고 길이 제한을 위해 각 자막에서 일부만 사용
+    combined_text = ""
+    max_length_per_transcript = 5000  # 각 자막당 최대 길이
+    
+    for i, transcript in enumerate(transcripts):
+        if transcript:
+            # 각 자막의 처음 일부분만 사용
+            truncated_transcript = transcript[:max_length_per_transcript]
+            combined_text += f"\n\n자막 {i+1}:\n{truncated_transcript}"
+    
+    if not combined_text:
+        return "유효한 자막이 없어 뉴스를 생성할 수 없습니다."
+    
+    # 스타일 선택 (기본값은 basic)
+    report_style = REPORT_STYLES.get(style, REPORT_STYLES["basic"])
+    
+    # 언어 선택 (기본값은 한국어)
+    language_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["ko"])
+    
+    # 스타일과 언어를 합친 시스템 프롬프트
+    system_prompt = f"{report_style} {language_instruction}"
+    
+    # 글자수 안내
+    tokens_instruction = f"약 {word_count}자 정도로 작성해주세요."
+    
+    # 키워드 목록 생성
+    keywords_str = ", ".join(keywords)
+    
+    try:
+        # GPT-4o-mini 모델 사용
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"다음은 여러 경제 관련 유튜브 영상의 자막입니다. 이 내용을 바탕으로 '{keywords_str}' 키워드에 초점을 맞춰 {tokens_instruction}\n\n{combined_text}"}
+            ],
+            max_tokens=int(word_count * 1.5),  # 원하는 글자수의 약 1.5배 토큰으로 설정
+            temperature=0.7  # 더 창의적인 결과를 위해 온도 조정
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        print(f"키워드 기반 뉴스 생성 중 오류 발생: {e}")
+        return f"키워드 기반 뉴스 생성 중 오류가 발생했습니다: {str(e)}" 

@@ -32,7 +32,8 @@ def add_news_table():
                 video_ids TEXT,
                 style TEXT DEFAULT 'basic',
                 word_count INTEGER DEFAULT 1000,
-                language TEXT DEFAULT 'ko'
+                language TEXT DEFAULT 'ko',
+                keywords TEXT
             )
         """)
         conn.commit()
@@ -60,7 +61,8 @@ def update_news_table():
     for field, field_type, default in [
         ('style', 'TEXT', "'basic'"), 
         ('word_count', 'INTEGER', "1000"), 
-        ('language', 'TEXT', "'ko'")
+        ('language', 'TEXT', "'ko'"),
+        ('keywords', 'TEXT', "NULL")
     ]:
         if field not in columns:
             try:
@@ -74,6 +76,31 @@ def update_news_table():
     conn.commit()
     conn.close()
 
+def add_extracted_keywords_table():
+    """추출된 키워드를 저장하는 테이블을 추가합니다."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # 키워드 테이블이 있는지 확인
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='extracted_keywords'")
+    if cursor.fetchone():
+        print("extracted_keywords 테이블이 이미 존재합니다.")
+    else:
+        # 추출된 키워드 테이블 추가
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS extracted_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (keyword)
+            )
+        """)
+        conn.commit()
+        print("extracted_keywords 테이블이 성공적으로 추가되었습니다.")
+    
+    conn.close()
+
 if __name__ == "__main__":
     add_news_table()
-    update_news_table() 
+    update_news_table()
+    add_extracted_keywords_table() 
