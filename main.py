@@ -28,7 +28,8 @@ from db_handler import (
     save_video_data,
     analyze_video,
     generate_report,
-    is_video_in_db
+    is_video_in_db,
+    generate_economic_news_from_recent_videos
 )
 from llm_handler import summarize_transcript, analyze_transcript, analyze_transcript_with_type
 
@@ -357,32 +358,51 @@ def collect_data(analysis_types=None):
     }
 
 def run_scheduler(analysis_types=None):
-    """스케줄러를 실행합니다."""
+    """스케줄러를 설정하고 실행합니다."""
     if analysis_types is None:
-        analysis_types = ["summary"]  # 기본 분석 유형
-        
+        analysis_types = ["summary", "analysis_economic"]  # 기본 분석 유형
+    
+    print(f"스케줄러 설정 중... 기본 분석 유형: {', '.join(analysis_types)}")
+    
+    # 구성 파일에서 간격 설정 읽기
     config = load_config()
-    interval = config.get("schedule_interval", 24)  # 기본값: 24시간
+    interval_hours = config.get("schedule_interval", 24)
     
-    print(f"스케줄러 시작됨. {interval}시간마다 데이터 수집을 실행합니다.")
-    print(f"수행할 분석 유형: {', '.join(analysis_types)}")
-    
-    # 즉시 첫 번째 실행
-    collect_data(analysis_types)
-    
-    # 스케줄 설정
+    # 분석 유형을 클로저에 전달
     def scheduled_job():
+        """정해진 시간에 실행될 작업"""
+        print(f"\n=== 스케줄러 작업 시작: {datetime.now().isoformat()} ===")
+        
+        # 데이터 수집 및 분석
         collect_data(analysis_types)
+        
+        # 리포트 생성
+        report = generate_report(hours=interval_hours)
+        if report:
+            print(f"신규 콘텐츠 리포트 생성 완료: {len(report.get('videos', []))}개의 비디오 처리됨.")
+        else:
+            print("신규 콘텐츠 리포트 생성 실패 또는 처리할 데이터 없음.")
+        
+        # 경제 뉴스 사설 생성
+        news_article = generate_economic_news_from_recent_videos(hours=interval_hours)
+        if news_article:
+            print(f"경제 뉴스 사설 생성 완료: {news_article['title']}")
+        else:
+            print("경제 뉴스 사설 생성 실패 또는 처리할 데이터 없음.")
+        
+        print(f"=== 스케줄러 작업 완료: {datetime.now().isoformat()} ===\n")
     
-    schedule.every(interval).hours.do(scheduled_job)
+    # 스케줄 설정 (매일 특정 시간에 실행)
+    schedule.every(interval_hours).hours.do(scheduled_job)
+    print(f"스케줄러가 {interval_hours}시간마다 실행되도록 설정되었습니다.")
     
-    # 스케줄러 무한 루프
-    try:
-        while True:
-            schedule.run_pending()
-            time.sleep(60)  # 1분마다 체크
-    except KeyboardInterrupt:
-        print("\n스케줄러가 중지되었습니다.")
+    # 처음 한 번 실행
+    scheduled_job()
+    
+    # 스케줄러 계속 실행
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # 1분마다 확인
 
 def test():
     """테스트 기능을 실행합니다."""

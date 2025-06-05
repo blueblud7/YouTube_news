@@ -11,7 +11,8 @@ SYSTEM_PROMPTS = {
     "summary": "당신은 영상 자막을 효과적으로 요약하는 전문가입니다. 핵심 내용만 간결하게 요약해주세요.",
     "analysis_economic": "당신은 경제 분야의 전문가로서 경제 관련 영상 내용을 분석합니다. 경제 이론, 시장 동향, 재무 지표 등을 고려하여 전문적인 경제 분석을 제공해주세요.",
     "analysis_simple": "당신은 콘텐츠 분석가입니다. 이 영상의 주요 내용을 간단하고 명확하게 분석해주세요. 복잡한 용어나 개념은 피하고, 일반 시청자도 이해하기 쉽게 설명해주세요.",
-    "analysis_complex": "당신은 다학제적 분석 전문가입니다. 이 영상의 내용을 심층적으로 분석하고, 다양한 관점(사회적, 경제적, 정치적, 문화적 측면 등)에서 종합적으로 평가해주세요. 내용의 맥락, 함의, 잠재적 영향력까지 고려한 복합적 분석을 제공해주세요."
+    "analysis_complex": "당신은 다학제적 분석 전문가입니다. 이 영상의 내용을 심층적으로 분석하고, 다양한 관점(사회적, 경제적, 정치적, 문화적 측면 등)에서 종합적으로 평가해주세요. 내용의 맥락, 함의, 잠재적 영향력까지 고려한 복합적 분석을 제공해주세요.",
+    "news_economic": "당신은 경제 분야의 최고 전문가로서 신문 1면 또는 사설을 작성하는 경제 전문 기자입니다. 여러 유튜브 자막에서 추출한 경제 정보를 바탕으로, 경제 및 주식 시장의 현재 상황과 향후 전망에 대한 심층적이고 통찰력 있는 사설을 작성해주세요. 주요 경제 이슈, 시장 동향, 투자 전략에 대한 전문적인 의견을 제시하고, 일반 독자도 이해할 수 있도록 명확하게 설명해주세요. 제목과 부제목을 포함하여 구조화된 형식으로 작성해주세요."
 }
 
 def summarize_transcript(transcript: str, max_length: int = 1500, analysis_type: str = "summary") -> str:
@@ -187,3 +188,48 @@ def get_available_analysis_types() -> List[Dict[str, str]]:
         {"code": "analysis_simple", "description": "간단 분석: 일반 시청자를 위한 간결한 분석"},
         {"code": "analysis_complex", "description": "복합 분석: 다양한 관점에서의 종합적 분석"}
     ] 
+
+def generate_economic_news(transcripts: List[str]) -> str:
+    """
+    여러 영상의 자막을 기반으로 경제 전문가가 작성한 것 같은 경제/주식 전망 사설을 생성합니다.
+    
+    :param transcripts: 여러 영상의 자막 목록
+    :return: 경제/주식 전망 사설
+    """
+    if not transcripts:
+        return "분석할 자막이 없어 경제 뉴스를 생성할 수 없습니다."
+    
+    if not openai.api_key:
+        return "OpenAI API 키가 설정되지 않아 경제 뉴스를 생성할 수 없습니다."
+    
+    # 자막들을 통합하고 길이 제한을 위해 각 자막에서 일부만 사용
+    combined_text = ""
+    max_length_per_transcript = 5000  # 각 자막당 최대 길이
+    
+    for i, transcript in enumerate(transcripts):
+        if transcript:
+            # 각 자막의 처음 일부분만 사용
+            truncated_transcript = transcript[:max_length_per_transcript]
+            combined_text += f"\n\n자막 {i+1}:\n{truncated_transcript}"
+    
+    if not combined_text:
+        return "유효한 자막이 없어 경제 뉴스를 생성할 수 없습니다."
+    
+    # 시스템 프롬프트 선택
+    system_prompt = SYSTEM_PROMPTS["news_economic"]
+    
+    try:
+        # GPT-4o-mini 모델 사용
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"다음은 여러 경제 관련 유튜브 영상의 자막입니다. 이 내용을 바탕으로 경제 전문가가 작성한 것 같은 경제 및 주식 시장 전망에 대한 신문 사설을 작성해주세요.\n\n{combined_text}"}
+            ],
+            max_tokens=2000,
+            temperature=0.7  # 더 창의적인 결과를 위해 온도 조정
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        print(f"경제 뉴스 생성 중 오류 발생: {e}")
+        return f"경제 뉴스 생성 중 오류가 발생했습니다: {str(e)}" 

@@ -59,6 +59,18 @@ def initialize_db():
         )
     """)
     
+    # 뉴스 사설을 저장하는 테이블 추가
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS news (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            news_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            video_ids TEXT
+        )
+    """)
+    
     conn.commit()
     conn.close()
     print(f"데이터베이스 초기화 완료: {DB_PATH}")
@@ -694,6 +706,202 @@ def analyze_video(video_id: str, analysis_type: str) -> bool:
     except Exception as e:
         print(f"비디오 분석 중 오류 발생: {e}")
         return False
+
+def save_news_article(title: str, content: str, news_type: str = "economic", video_ids: List[str] = None) -> bool:
+    """
+    뉴스 사설을 데이터베이스에 저장합니다.
+    
+    :param title: 뉴스 사설 제목
+    :param content: 뉴스 사설 내용
+    :param news_type: 뉴스 유형 (economic, political, social 등)
+    :param video_ids: 사설 생성에 사용된 비디오 ID 목록
+    :return: 성공 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 비디오 ID 목록을 쉼표로 구분된 문자열로 변환
+        video_ids_str = ",".join(video_ids) if video_ids else None
+        
+        # 뉴스 사설 저장
+        cursor.execute("""
+            INSERT INTO news (title, content, news_type, created_at, video_ids)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            title,
+            content,
+            news_type,
+            datetime.now().isoformat(),
+            video_ids_str
+        ))
+        
+        conn.commit()
+        conn.close()
+        print(f"뉴스 사설 '{title}'이(가) 데이터베이스에 저장되었습니다.")
+        return True
+    except Exception as e:
+        print(f"뉴스 사설 저장 중 오류 발생: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+def get_latest_news(news_type: str = None, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    최신 뉴스 사설을 가져옵니다.
+    
+    :param news_type: 뉴스 유형 (None이면 모든 유형)
+    :param limit: 최대 결과 수
+    :return: 뉴스 사설 목록
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        if news_type:
+            cursor.execute("""
+                SELECT id, title, content, news_type, created_at, video_ids
+                FROM news
+                WHERE news_type = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (news_type, limit))
+        else:
+            cursor.execute("""
+                SELECT id, title, content, news_type, created_at, video_ids
+                FROM news
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        # 결과를 딕셔너리 목록으로 변환
+        news_list = []
+        for row in rows:
+            news_list.append({
+                "id": row[0],
+                "title": row[1],
+                "content": row[2],
+                "news_type": row[3],
+                "created_at": row[4],
+                "video_ids": row[5].split(",") if row[5] else []
+            })
+        
+        return news_list
+    except Exception as e:
+        print(f"뉴스 사설 조회 중 오류 발생: {e}")
+        conn.close()
+        return []
+
+def get_news_by_id(news_id: int) -> Optional[Dict[str, Any]]:
+    """
+    특정 ID의 뉴스 사설을 가져옵니다.
+    
+    :param news_id: 뉴스 사설 ID
+    :return: 뉴스 사설 정보 (없으면 None)
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT id, title, content, news_type, created_at, video_ids
+            FROM news
+            WHERE id = ?
+        """, (news_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        # 결과를 딕셔너리로 변환
+        return {
+            "id": row[0],
+            "title": row[1],
+            "content": row[2],
+            "news_type": row[3],
+            "created_at": row[4],
+            "video_ids": row[5].split(",") if row[5] else []
+        }
+    except Exception as e:
+        print(f"뉴스 사설 조회 중 오류 발생: {e}")
+        conn.close()
+        return None
+
+def generate_economic_news_from_recent_videos(hours: int = 24) -> Optional[Dict[str, Any]]:
+    """
+    최근 지정된 시간 내의 비디오 자막을 사용하여 경제 뉴스 사설을 생성합니다.
+    
+    :param hours: 몇 시간 이내의 비디오를 대상으로 할지 (기본값 24시간)
+    :return: 생성된 뉴스 사설 정보 (성공한 경우) 또는 None (실패한 경우)
+    """
+    from llm_handler import generate_economic_news
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # 최근 비디오 조회 (timestamp를 datetime으로 비교)
+        since_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor.execute("""
+            SELECT id, title, transcript
+            FROM videos
+            WHERE created_at > ? AND transcript IS NOT NULL
+            ORDER BY created_at DESC
+        """, (since_time,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            print(f"최근 {hours}시간 내에 자막이 있는 비디오가 없습니다.")
+            return None
+        
+        # 비디오 정보 및 자막 추출
+        video_ids = []
+        transcripts = []
+        
+        for row in rows:
+            video_id = row[0]
+            transcript = row[2]
+            
+            if transcript:
+                video_ids.append(video_id)
+                transcripts.append(transcript)
+        
+        if not transcripts:
+            print("자막이 있는 비디오가 없습니다.")
+            return None
+        
+        # 경제 뉴스 사설 생성
+        news_content = generate_economic_news(transcripts)
+        
+        # 제목 추출 (첫 번째 줄을 제목으로 사용)
+        lines = news_content.split('\n')
+        title = lines[0].replace("#", "").strip()
+        if not title or len(title) < 5:
+            title = "오늘의 경제/주식 전망"
+        
+        # 뉴스 사설 저장
+        if save_news_article(title, news_content, "economic", video_ids):
+            # 저장된 뉴스 사설 정보 반환
+            return {
+                "title": title,
+                "content": news_content,
+                "news_type": "economic",
+                "created_at": datetime.now().isoformat(),
+                "video_ids": video_ids
+            }
+        else:
+            return None
+    except Exception as e:
+        print(f"경제 뉴스 사설 생성 중 오류 발생: {e}")
+        conn.close()
+        return None
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)
 initialize_db() 

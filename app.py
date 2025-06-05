@@ -39,7 +39,7 @@ def sidebar_menu():
     st.sidebar.title("YouTube 자막 분석 시스템")
     menu = st.sidebar.radio(
         "메뉴 선택",
-        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트"]
+        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스"]
     )
     return menu
 
@@ -893,37 +893,91 @@ def saved_reports_page():
         except Exception as e:
             st.error(f"리포트를 읽는 중 오류가 발생했습니다: {str(e)}")
 
+# 뉴스 페이지
+def news_page():
+    st.title("경제/주식 전망 뉴스")
+    
+    st.markdown("""
+    이 페이지에서는 수집된 YouTube 자막을 기반으로 경제 전문가가 작성한 것 같은 경제 및 주식 시장 전망 사설을 제공합니다.
+    스케줄러가 실행될 때마다 최신 자막을 분석하여 새로운 뉴스 사설을 생성합니다.
+    """)
+    
+    # 수동으로 뉴스 생성 옵션
+    with st.expander("새 뉴스 사설 생성"):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            hours = st.slider("몇 시간 이내의 비디오를 분석할지 선택", 1, 72, 24)
+        with col2:
+            generate_button = st.button("뉴스 생성")
+        
+        if generate_button:
+            with st.spinner("최근 영상의 자막을 분석하여 경제/주식 전망 뉴스를 생성하는 중..."):
+                from db_handler import generate_economic_news_from_recent_videos
+                news_article = generate_economic_news_from_recent_videos(hours=hours)
+                
+                if news_article:
+                    st.success("새로운 경제/주식 전망 뉴스가 생성되었습니다!")
+                else:
+                    st.error("뉴스 생성에 실패했습니다. 충분한 자막 데이터가 없거나 처리 중 오류가 발생했습니다.")
+    
+    # 최신 뉴스 목록 표시
+    st.subheader("최신 경제/주식 전망 뉴스")
+    
+    from db_handler import get_latest_news
+    news_articles = get_latest_news(news_type="economic", limit=10)
+    
+    if not news_articles:
+        st.info("아직 생성된 뉴스 사설이 없습니다. '새 뉴스 사설 생성' 버튼을 눌러 첫 번째 뉴스를 생성해 보세요.")
+    else:
+        # 뉴스 선택 탭
+        if len(news_articles) > 1:
+            news_titles = [f"{article['title']} ({article['created_at'][:10]})" for article in news_articles]
+            selected_news_index = st.selectbox("뉴스 선택", range(len(news_titles)), format_func=lambda i: news_titles[i])
+            selected_news = news_articles[selected_news_index]
+        else:
+            selected_news = news_articles[0]
+        
+        # 선택된 뉴스 표시
+        st.markdown(f"## {selected_news['title']}")
+        st.markdown(f"*생성일: {selected_news['created_at'][:10]}*")
+        
+        # 내용 표시 (마크다운 형식 지원)
+        st.markdown(selected_news['content'])
+        
+        # 출처 비디오 정보
+        if selected_news['video_ids']:
+            with st.expander("분석에 사용된 영상"):
+                # 비디오 정보 가져오기
+                conn = sqlite3.connect(DB_PATH)
+                for video_id in selected_news['video_ids']:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT title, channel_title, url FROM videos WHERE id = ?", (video_id,))
+                    video_info = cursor.fetchone()
+                    
+                    if video_info:
+                        st.markdown(f"- [{video_info[0]} - {video_info[1]}]({video_info[2]})")
+                conn.close()
+
 # 메인 함수
 def main():
     # 세션 상태 초기화
-    if 'analyze_video_id' not in st.session_state:
-        st.session_state.analyze_video_id = None
+    if "page" not in st.session_state:
+        st.session_state.page = "home"
     
-    # 채널 및 키워드 관리를 위한 세션 상태 초기화
-    if 'channel_id_for_search' not in st.session_state:
+    if "channel_id_for_search" not in st.session_state:
         st.session_state.channel_id_for_search = None
-    if 'channel_name_for_search' not in st.session_state:
+        
+    if "channel_name_for_search" not in st.session_state:
         st.session_state.channel_name_for_search = None
     
-    # 사이드바 메뉴
+    # URL 파라미터 처리
+    params = st.experimental_get_query_params()
+    view_video = params.get("view", [None])[0]
+    
+    # 메뉴 선택
     menu = sidebar_menu()
     
-    # URL 파라미터 확인
-    query_params = st.experimental_get_query_params()
-    
-    # 분석 보기 링크
-    if "view" in query_params:
-        menu = "저장된 분석 보기"
-        # 분석할 비디오 ID 설정
-        st.session_state.view_video_id = query_params["view"][0]
-    
-    # 분석 생성 링크
-    if "menu" in query_params and query_params["menu"][0] == "analyze":
-        menu = "자막 분석"
-        if "video_id" in query_params:
-            st.session_state.analyze_video_id = query_params["video_id"][0]
-    
-    # 메뉴에 따른 페이지 표시
+    # 페이지 전환
     if menu == "홈":
         home_page()
     elif menu == "URL 처리":
@@ -931,22 +985,20 @@ def main():
     elif menu == "채널 및 키워드 관리":
         channel_keyword_management_page()
     elif menu == "자막 분석":
-        # 다른 페이지에서 전달된 비디오 ID가 있는지 확인
-        video_id = st.session_state.analyze_video_id
-        st.session_state.analyze_video_id = None  # 사용 후 초기화
-        transcript_analysis_page(video_id)
+        transcript_analysis_page()
     elif menu == "키워드 분석":
         keyword_analysis_page()
     elif menu == "저장된 분석 보기":
-        # 링크를 통해 전달된 비디오 ID가 있는지 확인
-        video_id = st.session_state.get('view_video_id', None)
-        if 'view_video_id' in st.session_state:
-            del st.session_state.view_video_id  # 사용 후 초기화
-        view_analysis_page(video_id)
+        if view_video:
+            view_analysis_page(view_video)
+        else:
+            view_analysis_page()
     elif menu == "신규 콘텐츠 리포트":
         new_content_report_page()
     elif menu == "저장된 리포트":
         saved_reports_page()
+    elif menu == "뉴스":
+        news_page()
 
 if __name__ == "__main__":
     main() 
