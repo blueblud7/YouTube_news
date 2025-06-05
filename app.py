@@ -11,13 +11,17 @@ import pandas as pd
 import sqlite3
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
+import json
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # 프로젝트 모듈 임포트
-from youtube_handler import extract_video_id, get_info_by_url, get_video_transcript
-from db_handler import save_video_data, get_summaries_for_video, generate_report
+from youtube_handler import extract_video_id, get_info_by_url, get_video_transcript, extract_channel_handle, get_channel_info_by_handle
+from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword
 from llm_handler import summarize_transcript, analyze_transcript_with_type, get_available_analysis_types
+from main import collect_data, run_scheduler
 
 # 데이터베이스 파일 경로
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_news.db")
@@ -461,7 +465,6 @@ def channel_keyword_management_page():
                     if st.button("채널에서 키워드 검색", key="search_in_channel"):
                         with st.spinner("채널에서 키워드 검색 중..."):
                             # 채널 ID 추출
-                            from youtube_handler import extract_channel_handle, get_channel_info_by_handle
                             channel_handle = extract_channel_handle(selected_channel)
                             if channel_handle:
                                 channel_info = get_channel_info_by_handle(channel_handle)
@@ -757,118 +760,87 @@ def new_content_report_page():
                 "시간",
                 value=datetime.now().time()
             )
-            # 날짜와 시간 결합
-            custom_datetime = datetime.combine(selected_date, selected_time)
-            since_timestamp = custom_datetime.isoformat()
+            # 날짜와 시간을 결합하여 timezone-aware한 datetime 객체 생성
+            selected_datetime = datetime.combine(selected_date, selected_time).replace(tzinfo=timezone.utc)
+            since_timestamp = selected_datetime.isoformat()
         else:
+            # 시간 기준으로 계산 (timezone-aware)
             since_timestamp = None
     
+    # 비디오 검색 필터
+    st.subheader("비디오 필터")
+    search_query = st.text_input("제목으로 검색", "")
+    
     # 리포트 생성 버튼
-    if st.button("리포트 생성"):
+    if st.button("리포트 생성", type="primary"):
         with st.spinner("리포트를 생성하는 중..."):
             if custom_date:
                 report_data = generate_report(since_timestamp=since_timestamp)
             else:
                 report_data = generate_report(hours=selected_hours)
             
-            # 리포트 정보 표시
-            st.success(f"리포트가 생성되었습니다. 총 {report_data['total_videos']}개의 새로운 비디오가 있습니다.")
+            # 리포트 데이터 표시
+            st.success(f"리포트가 생성되었습니다. 총 {report_data['total_videos']}개의 비디오가 발견되었습니다.")
             
-            # 리포트 생성 시간 및 기간 정보
-            st.info(f"리포트 생성 시간: {datetime.fromisoformat(report_data['generated_at']).strftime('%Y-%m-%d %H:%M:%S')}")
-            st.info(f"리포트 기간: {datetime.fromisoformat(report_data['since']).strftime('%Y-%m-%d %H:%M:%S')}부터 현재까지")
-            
-            # 채널별 요약
-            if report_data['total_videos'] > 0:
-                st.subheader("채널별 새로운 콘텐츠")
-                
-                for channel, videos in report_data['channels'].items():
-                    with st.expander(f"{channel} ({len(videos)}개)"):
-                        for video in videos:
-                            st.markdown(f"**{video['title']}**")
-                            published_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00'))
-                            st.markdown(f"게시일: {published_date.strftime('%Y-%m-%d %H:%M')}")
-                            
-                            # 요약 정보 가져오기
-                            summaries = get_summaries_for_video(video['id'])
-                            if summaries:
-                                summary_types = list(summaries.keys())
-                                
-                                # 요약 표시를 위한 탭 생성
-                                if len(summary_types) > 0:
-                                    summary_tabs = st.tabs(summary_types)
-                                    for i, summary_type in enumerate(summary_types):
-                                        with summary_tabs[i]:
-                                            st.markdown(f"**{summary_type} 요약:**")
-                                            st.markdown(summaries[summary_type])
-                                
-                                st.markdown(f"[비디오 분석 보기](/?view={video['id']})")
-                                st.markdown(f"[YouTube에서 보기](https://www.youtube.com/watch?v={video['id']})")
-                            else:
-                                st.warning("이 비디오에 대한 요약이 없습니다.")
-                            
-                            st.markdown("---")
-                
-                # 전체 비디오 표 형식으로 표시
-                st.subheader("모든 새로운 콘텐츠")
-                videos_df = pd.DataFrame(report_data['videos'])
-                # 날짜 포맷 변환
-                videos_df['published_at'] = pd.to_datetime(videos_df['published_at'])
-                
-                st.dataframe(
-                    videos_df[['title', 'channel_title', 'published_at', 'view_count', 'transcript_length', 'analysis_count']],
-                    column_config={
-                        "title": "제목",
-                        "channel_title": "채널",
-                        "published_at": "게시일",
-                        "view_count": st.column_config.NumberColumn("조회수", format="%d"),
-                        "transcript_length": st.column_config.NumberColumn("자막 길이", format="%d자"),
-                        "analysis_count": st.column_config.NumberColumn("분석 수", format="%d개")
-                    },
-                    hide_index=True
-                )
-                
-                # 비디오 데이터 필터링 및 상세 내용 표시 옵션
-                if len(videos_df) > 5:
-                    st.subheader("비디오 필터링")
-                    search_term = st.text_input("제목 검색", placeholder="검색어 입력...")
-                    
-                    if search_term:
-                        filtered_df = videos_df[videos_df['title'].str.contains(search_term, case=False)]
-                        st.write(f"{len(filtered_df)}개의 비디오가 검색되었습니다.")
-                        
-                        if not filtered_df.empty:
-                            selected_video_id = st.selectbox(
-                                "비디오 선택",
-                                options=filtered_df['id'].tolist(),
-                                format_func=lambda x: filtered_df[filtered_df['id'] == x]['title'].iloc[0]
-                            )
-                            
-                            if selected_video_id:
-                                # 선택한 비디오의 요약 표시
-                                st.subheader("선택한 비디오 요약")
-                                summaries = get_summaries_for_video(selected_video_id)
-                                
-                                if summaries:
-                                    summary_types = list(summaries.keys())
-                                    selected_type = st.selectbox("요약 유형 선택", options=summary_types)
-                                    
-                                    if selected_type:
-                                        st.markdown(f"**{selected_type} 요약:**")
-                                        st.markdown(summaries[selected_type])
-                                else:
-                                    st.warning("이 비디오에 대한 요약이 없습니다.")
-                
-                # 리포트 다운로드 옵션
-                if st.download_button(
-                    label="리포트 다운로드 (CSV)",
-                    data=videos_df[['title', 'channel_title', 'published_at', 'view_count', 'transcript_length', 'analysis_count']].to_csv(index=False).encode('utf-8'),
-                    file_name=f"youtube_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv"
-                ):
-                    st.success("리포트가 다운로드되었습니다.")
+            if report_data['total_videos'] == 0:
+                st.info("선택한 기간 내에 새로운 비디오가 없습니다.")
             else:
-                st.warning("선택한 기간 내에 새로운 콘텐츠가 없습니다.")
+                # 채널별로 비디오 표시
+                for channel, videos in report_data['channels'].items():
+                    # 검색 필터 적용
+                    if search_query:
+                        filtered_videos = [v for v in videos if search_query.lower() in v['title'].lower()]
+                        if not filtered_videos:
+                            continue
+                    else:
+                        filtered_videos = videos
+                    
+                    st.subheader(f"{channel} ({len(filtered_videos)}개)")
+                    
+                    # 각 비디오를 확장 가능한 카드로 표시
+                    for video in filtered_videos:
+                        with st.expander(f"{video['title']}"):
+                            col1, col2 = st.columns([3, 1])
+                            
+                            with col1:
+                                st.write(f"**게시일:** {video['published_at']}")
+                                st.write(f"**조회수:** {video.get('view_count', 'N/A')}")
+                                
+                                # 유튜브 링크 추가
+                                video_url = f"https://www.youtube.com/watch?v={video['id']}"
+                                st.markdown(f"[YouTube에서 보기]({video_url})")
+                            
+                            # 요약 정보 표시 (탭으로 구성)
+                            if video.get('summaries'):
+                                tabs = st.tabs(list(video['summaries'].keys()))
+                                for i, (analysis_type, content) in enumerate(video['summaries'].items()):
+                                    with tabs[i]:
+                                        st.markdown(content)
+                            else:
+                                st.info("이 비디오에 대한 요약 정보가 없습니다.")
+    
+    # 저장된 리포트 목록
+    st.subheader("저장된 리포트")
+    reports_dir = "reports"
+    if os.path.exists(reports_dir):
+        report_files = [f for f in os.listdir(reports_dir) if f.endswith('.md')]
+        report_files.sort(reverse=True)  # 최신 순으로 정렬
+        
+        if report_files:
+            selected_report = st.selectbox(
+                "저장된 리포트 선택",
+                options=report_files,
+                format_func=lambda x: x.replace('report_', '').replace('.md', '').replace('_', ' ')
+            )
+            
+            if selected_report:
+                with open(os.path.join(reports_dir, selected_report), 'r', encoding='utf-8') as f:
+                    report_content = f.read()
+                st.markdown(report_content)
+        else:
+            st.info("저장된 리포트가 없습니다.")
+    else:
+        st.info("리포트 디렉토리가 존재하지 않습니다.")
 
 # 저장된 리포트 페이지
 def saved_reports_page():

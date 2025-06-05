@@ -198,9 +198,10 @@ def get_channel_info_by_handle(handle: str):
         return None
 
 
-def search_videos_by_keyword(keyword: str, channel_id: str = None, max_results=10):
+def search_videos_by_keyword(keyword: str, channel_id: str = None, max_results=15):
     """
     키워드로 동영상을 검색합니다. 특정 채널 내에서 검색할 수도 있습니다.
+    max_results: 최대 검색 결과 수 (기본값 15)
     """
     service = get_youtube_service()
     if not service:
@@ -210,7 +211,8 @@ def search_videos_by_keyword(keyword: str, channel_id: str = None, max_results=1
             'q': keyword,
             'part': "snippet",
             'type': "video",
-            'maxResults': max_results
+            'maxResults': max_results,
+            'order': 'date'  # 날짜순으로 정렬하여 최신 영상부터 가져옵니다
         }
         if channel_id:
             search_params['channelId'] = channel_id
