@@ -7,6 +7,9 @@ import json
 # 데이터베이스 파일 경로 (프로젝트 루트에 저장)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_news.db")
 
+from youtube_handler import get_channel_info_by_handle, search_videos_by_keyword
+from llm_handler import analyze_transcript_for_economic_insights, create_detailed_video_summary, generate_news_by_keywords, summarize_transcript
+
 def initialize_db():
     """데이터베이스와 테이블을 초기화합니다."""
     conn = sqlite3.connect(DB_PATH)
@@ -673,14 +676,30 @@ def search_videos_by_keyword(keyword: str, limit: int = 50) -> List[Dict[str, An
 
 def is_video_in_db(video_id: str) -> bool:
     """
-    비디오 ID가 데이터베이스에 있는지 확인합니다.
+    비디오 ID가 데이터베이스에 존재하는지 확인합니다.
     
-    :param video_id: 비디오 ID
+    :param video_id: 확인할 비디오 ID
     :return: 존재 여부
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM videos WHERE id = ?", (video_id,))
+    result = cursor.fetchone() is not None
+    conn.close()
+    return result
+
+def is_video_processed(video_id: str, summary_type: str = "summary") -> bool:
+    """
+    비디오가 특정 요약 유형으로 이미 처리되었는지 확인합니다.
+    
+    :param video_id: 확인할 비디오 ID
+    :param summary_type: 확인할 요약 유형 (기본값: "summary")
+    :return: 처리 여부
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM summaries WHERE video_id = ? AND summary_type = ?", 
+                  (video_id, summary_type))
     result = cursor.fetchone() is not None
     conn.close()
     return result

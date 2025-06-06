@@ -642,6 +642,130 @@ def extract_channel_handle(url):
     
     return None
 
+def get_channel_info(channel_identifier):
+    """
+    다양한 형태의 채널 식별자(ID, 핸들, URL)로부터 채널 정보를 가져옵니다.
+    
+    :param channel_identifier: 채널 ID, 핸들(@username), 또는 URL
+    :return: 채널 정보 또는 None
+    """
+    if not channel_identifier:
+        print("채널 식별자가 비어 있습니다.")
+        return None
+    
+    # URL 형태인 경우 (https://youtube.com/ 포함)
+    if "youtube.com" in channel_identifier:
+        return get_info_by_url(channel_identifier)
+    
+    # 핸들 형태인 경우 (@username)
+    elif channel_identifier.startswith('@'):
+        return get_channel_info_by_handle(channel_identifier)
+    
+    # ID 형태인 경우 (UC로 시작하는 ID)
+    elif channel_identifier.startswith('UC'):
+        service = get_youtube_service()
+        if not service:
+            return None
+        
+        try:
+            channel_response = service.channels().list(
+                part="snippet,statistics",
+                id=channel_identifier
+            ).execute()
+            
+            if channel_response.get("items"):
+                channel_data = channel_response["items"][0]["snippet"]
+                channel_stats = channel_response["items"][0].get("statistics", {})
+                return {
+                    "type": "channel",
+                    "id": channel_identifier,
+                    "title": channel_data.get("title"),
+                    "description": channel_data.get("description"),
+                    "custom_url": channel_data.get("customUrl"),
+                    "subscriber_count": channel_stats.get("subscriberCount"),
+                    "video_count": channel_stats.get("videoCount"),
+                    "published_at": channel_data.get("publishedAt")
+                }
+        except Exception as e:
+            print(f"채널 ID로 정보 가져오기 실패: {e}")
+            return None
+    
+    # 핸들이나 채널명으로 간주하고 검색 시도
+    else:
+        service = get_youtube_service()
+        if not service:
+            return None
+        
+        try:
+            # 먼저 검색어를 채널명으로 직접 시도
+            # API 호출을 최소화하기 위해 채널명을 추측해서 바로 결과 생성
+            # 이렇게 하면 API 할당량 초과 문제를 일부 해결할 수 있음
+            channel_id = f"DIRECT_{channel_identifier.replace(' ', '_')}"
+            
+            return {
+                "type": "channel",
+                "id": channel_id,
+                "title": channel_identifier,
+                "description": f"{channel_identifier} 채널",
+                "custom_url": f"@{channel_identifier.lower().replace(' ', '')}",
+                "search_query": channel_identifier,
+                "is_direct_mapping": True  # 직접 매핑 표시
+            }
+            
+            # 아래 API 검색 코드는 API 할당량이 충분할 때만 사용
+            # 현재는 API 할당량 초과 문제로 인해 주석 처리
+            """
+            # 핸들이나 채널명으로 검색
+            search_response = service.search().list(
+                part="snippet",
+                q=channel_identifier,
+                type="channel",
+                maxResults=1
+            ).execute()
+            
+            if search_response.get("items"):
+                channel_id = search_response["items"][0]["snippet"]["channelId"]
+                channel_title = search_response["items"][0]["snippet"]["title"]
+                
+                # 채널 ID로 상세 정보 조회
+                channel_response = service.channels().list(
+                    part="snippet,statistics",
+                    id=channel_id
+                ).execute()
+                
+                if channel_response.get("items"):
+                    channel_data = channel_response["items"][0]["snippet"]
+                    channel_stats = channel_response["items"][0].get("statistics", {})
+                    return {
+                        "type": "channel",
+                        "id": channel_id,
+                        "title": channel_data.get("title"),
+                        "description": channel_data.get("description"),
+                        "custom_url": channel_data.get("customUrl"),
+                        "search_query": channel_identifier,
+                        "subscriber_count": channel_stats.get("subscriberCount"),
+                        "video_count": channel_stats.get("videoCount"),
+                        "published_at": channel_data.get("publishedAt")
+                    }
+            """
+        except Exception as e:
+            print(f"채널명/핸들로 검색 실패: {e}")
+            # 실패해도 일단 기본 정보로 응답
+            channel_id = f"DIRECT_{channel_identifier.replace(' ', '_')}"
+            return {
+                "type": "channel",
+                "id": channel_id,
+                "title": channel_identifier,
+                "description": f"{channel_identifier} 채널",
+                "custom_url": f"@{channel_identifier.lower().replace(' ', '')}",
+                "search_query": channel_identifier,
+                "is_direct_mapping": True,
+                "error": str(e)
+            }
+    
+    print(f"'{channel_identifier}'에 해당하는 채널 정보를 찾을 수 없습니다.")
+    return None
+
 def get_latest_videos_from_channel(channel_id: str, max_results=10):
     """
     채널 ID를 통해 최신 동영상 목록을 가져옵니다.

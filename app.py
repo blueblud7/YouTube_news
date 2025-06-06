@@ -415,13 +415,13 @@ def channel_keyword_management_page():
                             save_config(config)
                             
                             # 데이터베이스에서도 삭제
-                            from youtube_handler import extract_channel_handle, get_channel_info_by_handle
+                            from youtube_handler import extract_channel_handle, get_channel_info
                             handle = extract_channel_handle(channel_url)
-                            if handle:
-                                channel_info = get_channel_info_by_handle(handle)
-                                if channel_info and channel_info.get("id"):
-                                    from db_handler import delete_channel
-                                    delete_channel(channel_info.get("id"))
+                            channel_identifier = handle if handle else channel_url
+                            channel_info = get_channel_info(channel_identifier)
+                            if channel_info and channel_info.get("id"):
+                                from db_handler import delete_channel
+                                delete_channel(channel_info.get("id"))
                             
                             st.success(f"채널 '{channel_url}'이(가) 삭제되었습니다.")
                             st.rerun()
@@ -442,11 +442,13 @@ def channel_keyword_management_page():
                 else:
                     from youtube_handler import extract_channel_handle, get_channel_info_by_handle
                     handle = extract_channel_handle(new_channel)
-                    if not handle:
-                        st.error("유효한 YouTube 채널 URL이 아닙니다.")
+                    if not handle and not new_channel.startswith('@') and not new_channel.startswith('UC'):
+                        st.error("유효한 YouTube 채널 URL, 핸들 또는 ID가 아닙니다.")
                     else:
                         # 채널 정보 가져오기
-                        channel_info = get_channel_info_by_handle(handle)
+                        from youtube_handler import get_channel_info
+                        channel_identifier = handle if handle else new_channel
+                        channel_info = get_channel_info(channel_identifier)
                         if channel_info and channel_info.get("id"):
                             # config.json에 채널 추가
                             from main import add_channel
@@ -454,8 +456,17 @@ def channel_keyword_management_page():
                             
                             # 데이터베이스의 channels 테이블에도 추가
                             from db_handler import add_channel as db_add_channel
+                            
+                            # 채널 ID 형식 확인
+                            channel_id = channel_info.get("id")
+                            handle = channel_info.get("custom_url", handle)
+                            
+                            # 직접 매핑된 경우 채널 ID를 데이터베이스에 적합한 형식으로 변환
+                            if channel_info.get("is_direct_mapping"):
+                                st.info(f"유튜브 API 할당량 제한으로 인해 '{channel_identifier}'를 직접 채널로 등록합니다.")
+                            
                             db_add_channel(
-                                channel_id=channel_info.get("id"),
+                                channel_id=channel_id,
                                 title=channel_info.get("title"),
                                 handle=handle,
                                 description=channel_info.get("description")
