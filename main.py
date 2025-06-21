@@ -25,7 +25,7 @@ from youtube_handler import (
     get_latest_videos_from_channel
 )
 from db_handler import (
-    init_db,
+    initialize_db,
     save_video_data,
     analyze_video,
     generate_report,

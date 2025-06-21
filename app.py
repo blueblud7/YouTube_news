@@ -16,10 +16,11 @@ import re
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
+from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword, get_all_editorials, save_editorial, get_editorials_by_date_range, delete_editorial
 
 # 프로젝트 모듈 임포트
 from youtube_handler import extract_video_id, get_info_by_url, get_video_transcript, extract_channel_handle, get_channel_info_by_handle
-from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword
+from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword, get_all_editorials, save_editorial, get_editorials_by_date_range, delete_editorial
 from llm_handler import summarize_transcript, analyze_transcript_with_type, get_available_analysis_types
 from main import collect_data, run_scheduler
 
@@ -39,7 +40,7 @@ def sidebar_menu():
     st.sidebar.title("YouTube 자막 분석 시스템")
     menu = st.sidebar.radio(
         "메뉴 선택",
-        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "최신 영상 분석"]
+        ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "최신 영상 분석", "구글 로그인 및 최신 동영상"]
     )
     return menu
 
@@ -64,8 +65,11 @@ def get_videos_with_transcript(limit=50):
 def url_processing_page():
     st.title("YouTube URL 처리")
     
+    # 미리 채워진 URL이 있는지 확인
+    prefill_url = getattr(st.session_state, 'prefill_url', '')
+    
     with st.form("url_form"):
-        url = st.text_input("YouTube URL 입력", placeholder="https://www.youtube.com/watch?v=...")
+        url = st.text_input("YouTube URL 입력", placeholder="https://www.youtube.com/watch?v=...", value=prefill_url)
         analysis_types = st.multiselect(
             "분석 유형 선택",
             options=[t["code"] for t in get_available_analysis_types()],
@@ -73,6 +77,10 @@ def url_processing_page():
             format_func=lambda x: next((t["description"] for t in get_available_analysis_types() if t["code"] == x), x)
         )
         submitted = st.form_submit_button("처리 시작")
+    
+    # 미리 채워진 URL이 처리되면 세션에서 제거
+    if prefill_url and 'prefill_url' in st.session_state:
+        del st.session_state.prefill_url
     
     if submitted and url:
         try:
@@ -1456,6 +1464,128 @@ def display_keyword_videos_analysis(videos, keyword, hours):
             
             st.markdown("---")
 
+def newspaper_section():
+    st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Merriweather:wght@300;400;700&display=swap');
+        
+        .newspaper {
+            font-family: 'Merriweather', serif;
+            line-height: 1.6;
+            color: #2c2c2c;
+            background: #fafafa;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.1);
+        }
+        
+        .masthead {
+            font-family: 'Playfair Display', serif;
+            font-size: 3rem;
+            font-weight: 900;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .tagline {
+            text-align: center;
+            font-style: italic;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        
+        .date-edition {
+            text-align: center;
+            border-top: 1px solid #ddd;
+            border-bottom: 1px solid #ddd;
+            padding: 10px 0;
+            margin-bottom: 30px;
+        }
+        
+        .headline {
+            font-family: 'Playfair Display', serif;
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+        }
+        
+        .subheadline {
+            font-size: 1.2rem;
+            font-style: italic;
+            color: #555;
+            margin-bottom: 20px;
+            border-left: 4px solid #d4af37;
+            padding-left: 15px;
+        }
+        
+        .article-text {
+            column-count: 2;
+            column-gap: 30px;
+            text-align: justify;
+            margin-bottom: 30px;
+        }
+        
+        .sidebar {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .sidebar-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+            text-align: center;
+            border-bottom: 2px solid #d4af37;
+            padding-bottom: 8px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="newspaper">', unsafe_allow_html=True)
+    
+    # 헤더
+    st.markdown('<h1 class="masthead">데일리 뉴스</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="tagline">"신뢰할 수 있는 정보, 깊이 있는 분석"</p>', unsafe_allow_html=True)
+    
+    current_date = datetime.now().strftime("%Y년 %m월 %d일 %A")
+    st.markdown(f'<div class="date-edition">{current_date}</div>', unsafe_allow_html=True)
+    
+    # 메인 콘텐츠
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown('<h2 class="headline">기술 혁신이 바꾸는 미래 사회</h2>', unsafe_allow_html=True)
+        st.markdown('<p class="subheadline">인공지능과 자동화 기술이 가져올 변화와 우리의 준비</p>', unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="article-text">
+            <p>21세기는 기술 혁신의 시대라고 불러도 과언이 아니다. 특히 인공지능, 머신러닝, 그리고 자동화 기술의 발전은 우리 사회 전반에 걸쳐 근본적인 변화를 가져오고 있다.</p>
+            
+            <p>전문가들은 향후 10년 내에 현재 존재하는 직업의 상당 부분이 자동화될 것이라고 전망하고 있다. 하지만 이것이 단순히 일자리 감소를 의미하지는 않는다. 새로운 기술의 도입은 동시에 새로운 형태의 일자리를 창출하기도 한다.</p>
+            
+            <p>교육계에서는 이러한 변화에 대비해 커리큘럼을 개편하고 있다. 단순 암기보다는 창의적 사고와 문제 해결 능력을 기르는 데 중점을 두고 있으며, 디지털 리터러시 교육을 강화하고 있다.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="sidebar">', unsafe_allow_html=True)
+        st.markdown('<h3 class="sidebar-title">주요 뉴스</h3>', unsafe_allow_html=True)
+        
+        # 데이터베이스에서 최신 뉴스 가져오기
+        editorials = get_all_editorials()
+        if editorials:
+            for editorial in editorials[:3]:
+                st.markdown(f"**{editorial['title']}**")
+                st.markdown(f"_{editorial['date']}_")
+                st.markdown("---")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # 메인 함수
 def main():
     # 세션 상태 초기화
@@ -1522,6 +1652,226 @@ def main():
         news_page()
     elif menu == "최신 영상 분석":
         latest_videos_analysis_page()
+    elif menu == "구글 로그인 및 최신 동영상":
+        google_login_latest_videos_page()
+
+def google_login_latest_videos_page():
+    """구글 로그인을 통한 최신 동영상 검색 페이지"""
+    st.title("🔐 구글 로그인 및 최신 동영상")
+    
+    # 구글 인증 핸들러 임포트
+    from google_auth_handler import auth_handler
+    
+    # 탭 생성
+    tab1, tab2, tab3 = st.tabs(["🔑 구글 로그인", "📺 구독 채널 동영상", "🔍 키워드 검색"])
+    
+    with tab1:
+        st.subheader("구글 계정 로그인")
+        st.markdown("""
+        YouTube API를 사용하여 다음 기능들을 이용하려면 구글 계정으로 로그인이 필요합니다:
+        
+        - 📺 **구독 채널 목록 확인**
+        - 🎬 **구독 채널의 최신 동영상 가져오기**
+        - 🔍 **키워드 기반 동영상 검색**
+        """)
+        
+        # 로그인 상태 확인
+        if auth_handler.youtube_service:
+            st.success("✅ 이미 로그인되어 있습니다!")
+            
+            # 로그아웃 버튼
+            if st.button("로그아웃"):
+                import os
+                if os.path.exists('token.pickle'):
+                    os.remove('token.pickle')
+                auth_handler.creds = None
+                auth_handler.youtube_service = None
+                st.success("로그아웃되었습니다.")
+                st.rerun()
+        else:
+            st.info("구글 계정으로 로그인하세요.")
+            
+            # 로그인 버튼
+            if st.button("구글 로그인"):
+                with st.spinner("구글 로그인 중..."):
+                    if auth_handler.authenticate():
+                        st.success("✅ 로그인 성공!")
+                        st.rerun()
+                    else:
+                        st.error("❌ 로그인 실패. credentials.json 파일을 확인하세요.")
+        
+        # 설정 안내
+        with st.expander("🔧 설정 방법"):
+            st.markdown("""
+            ### 1. Google Cloud Console 설정
+            1. [Google Cloud Console](https://console.cloud.google.com/)에 접속
+            2. 새 프로젝트 생성 또는 기존 프로젝트 선택
+            3. YouTube Data API v3 활성화
+            
+            ### 2. OAuth 2.0 클라이언트 ID 생성
+            1. "API 및 서비스" > "사용자 인증 정보" 메뉴로 이동
+            2. "사용자 인증 정보 만들기" > "OAuth 2.0 클라이언트 ID" 선택
+            3. 애플리케이션 유형: "데스크톱 앱" 선택
+            4. 클라이언트 ID 생성 후 JSON 파일 다운로드
+            
+            ### 3. credentials.json 파일 업로드
+            1. 다운로드한 JSON 파일을 `credentials.json`으로 이름 변경
+            2. 프로젝트 루트 디렉토리에 업로드
+            """)
+    
+    with tab2:
+        st.subheader("구독 채널 최신 동영상")
+        
+        if not auth_handler.youtube_service:
+            st.warning("먼저 구글 로그인을 해주세요.")
+        else:
+            # 시간 필터 선택
+            time_filter = st.selectbox(
+                "시간 범위 선택",
+                options=[
+                    ("latest", "최신 (6시간 이내)"),
+                    ("1d", "1일 이내"),
+                    ("1w", "1주일 이내"),
+                    ("1m", "1개월 이내")
+                ],
+                format_func=lambda x: x[1]
+            )[0]
+            
+            # 최대 결과 수 선택
+            max_results = st.slider("최대 동영상 수", 10, 100, 50)
+            
+            if st.button("구독 채널 동영상 가져오기"):
+                with st.spinner("구독 채널 동영상을 가져오는 중..."):
+                    videos = auth_handler.get_subscription_videos(
+                        time_filter=time_filter,
+                        max_results=max_results
+                    )
+                    
+                    if videos:
+                        st.success(f"✅ {len(videos)}개의 동영상을 찾았습니다!")
+                        
+                        # 동영상 목록 표시
+                        for i, video in enumerate(videos):
+                            with st.container():
+                                col1, col2 = st.columns([1, 3])
+                                
+                                with col1:
+                                    st.image(video['thumbnail_url'], width=120)
+                                
+                                with col2:
+                                    st.markdown(f"**{video['title']}**")
+                                    st.markdown(f"📺 {video['channel_title']}")
+                                    if 'subscription' in video:
+                                        st.markdown(f"🔔 구독 채널: {video['subscription']}")
+                                    
+                                    # 발행일 포맷팅
+                                    published_date = datetime.fromisoformat(
+                                        video['published_at'].replace('Z', '+00:00')
+                                    ).strftime("%Y-%m-%d %H:%M")
+                                    st.markdown(f"📅 {published_date}")
+                                    
+                                    # 링크 버튼
+                                    if st.button(f"보기 {i+1}", key=f"watch_{i}"):
+                                        st.markdown(f"[YouTube에서 보기]({video['url']})")
+                                    
+                                    # 분석 버튼
+                                    if st.button(f"분석 {i+1}", key=f"analyze_{i}"):
+                                        st.session_state.selected_video_url = video['url']
+                                        st.rerun()
+                        
+                        st.markdown("---")
+                        st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
+                    else:
+                        st.warning("해당 기간에 업로드된 구독 채널 동영상이 없습니다.")
+    
+    with tab3:
+        st.subheader("키워드 기반 동영상 검색")
+        
+        if not auth_handler.youtube_service:
+            st.warning("먼저 구글 로그인을 해주세요.")
+        else:
+            # 검색 키워드 입력
+            keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...")
+            
+            # 시간 필터 선택
+            time_filter = st.selectbox(
+                "시간 범위 선택",
+                options=[
+                    ("latest", "최신 (6시간 이내)"),
+                    ("1d", "1일 이내"),
+                    ("1w", "1주일 이내"),
+                    ("1m", "1개월 이내")
+                ],
+                format_func=lambda x: x[1],
+                key="keyword_time_filter"
+            )[0]
+            
+            # 최대 결과 수 선택
+            max_results = st.slider("최대 동영상 수", 10, 100, 50, key="keyword_max_results")
+            
+            if st.button("키워드로 검색") and keyword:
+                with st.spinner(f"'{keyword}' 키워드로 동영상을 검색하는 중..."):
+                    videos = auth_handler.search_videos_by_keyword(
+                        keyword=keyword,
+                        time_filter=time_filter,
+                        max_results=max_results
+                    )
+                    
+                    if videos:
+                        st.success(f"✅ '{keyword}' 키워드로 {len(videos)}개의 동영상을 찾았습니다!")
+                        
+                        # 동영상 목록 표시
+                        for i, video in enumerate(videos):
+                            with st.container():
+                                col1, col2 = st.columns([1, 3])
+                                
+                                with col1:
+                                    st.image(video['thumbnail_url'], width=120)
+                                
+                                with col2:
+                                    st.markdown(f"**{video['title']}**")
+                                    st.markdown(f"📺 {video['channel_title']}")
+                                    
+                                    # 발행일 포맷팅
+                                    published_date = datetime.fromisoformat(
+                                        video['published_at'].replace('Z', '+00:00')
+                                    ).strftime("%Y-%m-%d %H:%M")
+                                    st.markdown(f"📅 {published_date}")
+                                    
+                                    # 설명 미리보기
+                                    if video['description']:
+                                        desc_preview = video['description'][:100] + "..." if len(video['description']) > 100 else video['description']
+                                        st.markdown(f"📝 {desc_preview}")
+                                    
+                                    # 링크 버튼
+                                    if st.button(f"보기 {i+1}", key=f"keyword_watch_{i}"):
+                                        st.markdown(f"[YouTube에서 보기]({video['url']})")
+                                    
+                                    # 분석 버튼
+                                    if st.button(f"분석 {i+1}", key=f"keyword_analyze_{i}"):
+                                        st.session_state.selected_video_url = video['url']
+                                        st.rerun()
+                        
+                        st.markdown("---")
+                        st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
+                    else:
+                        st.warning(f"'{keyword}' 키워드로 해당 기간에 업로드된 동영상을 찾을 수 없습니다.")
+    
+    # 선택된 동영상이 있으면 분석 페이지로 이동
+    if hasattr(st.session_state, 'selected_video_url') and st.session_state.selected_video_url:
+        st.markdown("---")
+        st.subheader("🎬 선택된 동영상 분석")
+        st.info(f"선택된 동영상: {st.session_state.selected_video_url}")
+        
+        if st.button("자막 분석 페이지로 이동"):
+            # URL 처리 페이지로 이동하고 URL 입력
+            st.session_state.page = "URL 처리"
+            st.session_state.prefill_url = st.session_state.selected_video_url
+            st.rerun()
+        
+        if st.button("선택 해제"):
+            del st.session_state.selected_video_url
+            st.rerun()
 
 if __name__ == "__main__":
     main() 

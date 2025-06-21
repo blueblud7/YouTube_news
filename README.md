@@ -9,6 +9,7 @@ YouTube 동영상의 자막을 수집하고 저장하며, GPT-4o-mini를 활용�
 - 청크 단위로 처리하여 길이 제한 없이 모든 자막 처리 가능
 - GPT-4o-mini를 활용한 자막 요약 및 분석
 - SQLite 데이터베이스에 메타데이터와 자막 저장
+- 🔐 구글 로그인을 통한 유튜브 구독 채널 및 키워드 기반 최신 동영상 검색
 
 ## 설치 방법
 
@@ -31,7 +32,32 @@ YOUTUBE_API_KEY_2=your_youtube_api_key_2
 OPENAI_API_KEY=your_openai_api_key
 ```
 
+3. 🔐 구글 OAuth 인증 설정 (새로운 기능):
+   - [Google Cloud Console](https://console.cloud.google.com/)에서 새 프로젝트 생성
+   - YouTube Data API v3 활성화
+   - OAuth 2.0 클라이언트 ID 생성 (데스크톱 앱)
+   - 다운로드한 JSON 파일을 `credentials.json`으로 이름 변경하여 프로젝트 루트에 저장
+
 ## 사용 방법
+
+### 웹 인터페이스 실행
+
+```bash
+streamlit run app.py
+```
+
+### 구글 로그인 및 최신 동영상 기능
+
+1. 🔐 구글 로그인: 사이드바에서 "구글 로그인 및 최신 동영상" 메뉴 선택
+2. 📺 구독 채널 동영상: 로그인 후 구독 채널의 최신 동영상을 시간별로 필터링하여 확인
+3. 🔍 키워드 검색: 특정 키워드로 최신 동영상을 검색하고 시간 범위 설정 가능
+4. 🎬 원클릭 분석: 검색된 동영상을 바로 자막 분석 시스템으로 전송
+
+⏰ 지원하는 시간 필터:
+- 최신 (6시간 이내)
+- 1일 이내
+- 1주일 이내
+- 1개월 이내
 
 ### 테스트 모드
 
@@ -85,6 +111,8 @@ python main.py --schedule
 - `llm_handler.py`: GPT-4o-mini를 활용한 요약 및 분석
 - `config.py`: 환경 변수 및 설정 관리
 - `check_transcripts.py`: 저장된 자막 정보 확인 도구
+- 🔐 `google_auth_handler.py`: 구글 OAuth 인증 및 유튜브 API 연동
+- 🎬 `app.py`: Streamlit 웹 인터페이스 (새로운 기능 포함)
 
 ## 자막 처리 특징
 
@@ -101,8 +129,24 @@ python main.py --schedule
 - 쇼츠 URL: `https://www.youtube.com/shorts/VIDEO_ID`
 - 임베드 URL: `https://www.youtube.com/embed/VIDEO_ID`
 
+## 새로운 기능: 구글 로그인 및 최신 동영상
+
+### 주요 특징
+- 🔐 구글 OAuth 인증: 안전한 구글 계정 로그인
+- �� 구독 채널 동영상: 구독 중인 채널의 최신 동영상 자동 수집
+- 🔍 키워드 검색: 특정 키워드로 최신 동영상 검색
+- ⏰ 시간 필터링: 최신, 1일, 1주일, 1개월 단위로 필터링
+- 🎬 원클릭 분석: 검색된 동영상을 바로 자막 분석 시스템으로 전송
+
+### 사용 시나리오
+1. 📰 뉴스 모니터링: 특정 키워드로 최신 뉴스 동영상 검색
+2. 📅 구독 채널 관리: 구독 채널의 최신 콘텐츠 확인
+3. 🌟 트렌드 분석: 특정 주제의 최신 동영상 트렌드 파악
+4. 📚 콘텐츠 큐레이션: 관심 있는 동영상을 자동으로 수집하고 분석
+
 ## 주의사항
 
 - YouTube Data API 사용량 제한에 유의
 - 여러 개의 API 키를 설정하여 할당량 초과 방지
-- OpenAI API 사용 비용 발생에 주의 
+- OpenAI API 사용 비용 발생에 주의
+- 🔐 구글 OAuth 인증 시 credentials.json 파일 보안에 주의 

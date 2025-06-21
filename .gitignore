@@ -24,6 +24,7 @@ MANIFEST
 # Environment variables
 .env
 .env.local
+.env.*.local
 .venv
 env/
 venv/
@@ -36,6 +37,8 @@ ENV/
 
 # Reports
 reports/
+*.pdf
+*.html
 
 # API keys and sensitive information
 *_key.txt
@@ -51,4 +54,18 @@ reports/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Streamlit cache
+.streamlit/
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Google OAuth files
+credentials.json
+token.pickle 

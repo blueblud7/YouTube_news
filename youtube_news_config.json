@@ -5,16 +5,18 @@
     "https://www.youtube.com/@chesleytv",
     "https://www.youtube.com/@손경제",
     "https://www.youtube.com/@오종태",
-    "https://www.youtube.com/@MK_Invest",
-    "https://www.youtube.com/@kimjoonsongtv"
+    "https://www.youtube.com/@kimjoonsongtv",
+    "https://www.youtube.com/@hkglobalmarket"
   ],
   "keywords": [
     "오건영",
     "이선엽",
     "홍춘욱",
     "Bessent",
-    "Jamie Dimon"
+    "Jamie Dimon",
+    "비트코인",
+    "bitcoin"
   ],
   "schedule_interval": 12,
-  "last_run": "2025-06-05T09:58:07.288567"
+  "last_run": "2025-06-05T17:03:22.164486"
 }
