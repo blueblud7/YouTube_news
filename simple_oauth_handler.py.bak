@@ -1,0 +1,272 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+웹 기반 OAuth 플로우를 사용한 간단한 구글 인증 핸들러
+"""
+
+import streamlit as st
+import os
+import json
+import webbrowser
+import requests
+from datetime import datetime, timedelta
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from config import get_youtube_api_key
+
+class SimpleOAuthHandler:
+    def __init__(self):
+        self.youtube_service = None
+        self.authenticated = False
+        self.access_token = None
+        
+    def authenticate_with_web_flow(self):
+        """웹 기반 OAuth 플로우를 사용한 구글 인증"""
+        try:
+            # OAuth 2.0 설정
+            client_id = "your-client-id.apps.googleusercontent.com"
+            redirect_uri = "http://localhost:8501"
+            scope = "https://www.googleapis.com/auth/youtube.readonly"
+            
+            # 인증 URL 생성
+            auth_url = f"https://accounts.google.com/o/oauth2/auth?client_id={client_id}&redirect_uri={redirect_uri}&scope={scope}&response_type=code&access_type=offline"
+            
+            st.markdown("### 🔐 구글 로그인")
+            st.markdown("아래 버튼을 클릭하여 구글 계정으로 로그인하세요.")
+            
+            # 로그인 버튼
+            if st.button("🌐 구글 로그인 페이지 열기"):
+                webbrowser.open(auth_url)
+                st.info("브라우저에서 구글 로그인 페이지가 열렸습니다. 로그인 후 인증 코드를 입력하세요.")
+            
+            # 인증 코드 입력
+            auth_code = st.text_input("인증 코드를 입력하세요:", type="password")
+            
+            if auth_code:
+                # 토큰 교환
+                token_url = "https://oauth2.googleapis.com/token"
+                token_data = {
+                    "client_id": client_id,
+                    "client_secret": "your-client-secret",
+                    "code": auth_code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": redirect_uri
+                }
+                
+                response = requests.post(token_url, data=token_data)
+                
+                if response.status_code == 200:
+                    token_info = response.json()
+                    self.access_token = token_info.get("access_token")
+                    
+                    # YouTube API 서비스 생성
+                    self.youtube_service = build('youtube', 'v3', credentials=self.access_token)
+                    self.authenticated = True
+                    
+                    st.success("✅ 구글 로그인 성공!")
+                    return True
+                else:
+                    st.error("❌ 인증 코드가 유효하지 않습니다.")
+                    return False
+            
+            return False
+                
+        except Exception as e:
+            st.error(f"OAuth 인증 중 오류: {str(e)}")
+            return False
+    
+    def authenticate_simple(self):
+        """간단한 인증 (API 키만 사용)"""
+        try:
+            api_key = get_youtube_api_key()
+            if not api_key:
+                st.error("YouTube API 키가 설정되지 않았습니다.")
+                return False
+            
+            # API 키로 YouTube 서비스 생성
+            self.youtube_service = build('youtube', 'v3', developerKey=api_key)
+            self.authenticated = True
+            return True
+            
+        except Exception as e:
+            st.error(f"간단 인증 중 오류: {str(e)}")
+            return False
+    
+    def search_videos_by_keyword(self, keyword, time_filter='1w', max_results=50):
+        """키워드로 최신 동영상을 검색합니다."""
+        if not self.youtube_service:
+            if not self.authenticate_simple():
+                return []
+        
+        try:
+            # 시간 필터 설정
+            published_after = None
+            if time_filter == '1d':
+                published_after = datetime.now() - timedelta(days=1)
+            elif time_filter == '1w':
+                published_after = datetime.now() - timedelta(weeks=1)
+            elif time_filter == '1m':
+                published_after = datetime.now() - timedelta(days=30)
+            elif time_filter == 'latest':
+                published_after = datetime.now() - timedelta(hours=6)
+            
+            published_after_str = published_after.isoformat() + 'Z' if published_after else None
+            
+            videos = []
+            next_page_token = None
+            
+            while len(videos) < max_results:
+                request = self.youtube_service.search().list(
+                    part='snippet',
+                    q=keyword,
+                    type='video',
+                    order='date',
+                    maxResults=min(50, max_results - len(videos)),
+                    pageToken=next_page_token,
+                    publishedAfter=published_after_str
+                )
+                
+                response = request.execute()
+                
+                for item in response['items']:
+                    video = {
+                        'video_id': item['id']['videoId'],
+                        'title': item['snippet']['title'],
+                        'description': item['snippet']['description'],
+                        'channel_id': item['snippet']['channelId'],
+                        'channel_title': item['snippet']['channelTitle'],
+                        'published_at': item['snippet']['publishedAt'],
+                        'thumbnail_url': item['snippet']['thumbnails']['medium']['url'],
+                        'url': f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+                    }
+                    videos.append(video)
+                
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+            
+            return videos
+            
+        except HttpError as e:
+            st.error(f"동영상 검색 중 오류: {str(e)}")
+            return []
+        except Exception as e:
+            st.error(f"동영상 검색 중 오류: {str(e)}")
+            return []
+    
+    def get_subscriptions(self, max_results=50):
+        """사용자의 구독 채널 목록을 가져옵니다."""
+        if not self.authenticated:
+            st.warning("먼저 구글 로그인을 해주세요.")
+            return []
+        
+        try:
+            subscriptions = []
+            next_page_token = None
+            
+            while len(subscriptions) < max_results:
+                request = self.youtube_service.subscriptions().list(
+                    part='snippet',
+                    mine=True,
+                    maxResults=min(50, max_results - len(subscriptions)),
+                    pageToken=next_page_token
+                )
+                
+                response = request.execute()
+                
+                for item in response['items']:
+                    subscription = {
+                        'channel_id': item['snippet']['resourceId']['channelId'],
+                        'channel_title': item['snippet']['title'],
+                        'channel_description': item['snippet']['description'],
+                        'thumbnail_url': item['snippet']['thumbnails']['default']['url'],
+                        'subscribed_at': item['snippet']['publishedAt']
+                    }
+                    subscriptions.append(subscription)
+                
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+            
+            return subscriptions
+            
+        except HttpError as e:
+            st.error(f"구독 목록 가져오기 중 오류: {str(e)}")
+            return []
+    
+    def get_subscription_videos(self, time_filter='1w', max_results=50):
+        """구독 채널의 최신 동영상을 가져옵니다."""
+        if not self.authenticated:
+            st.warning("먼저 구글 로그인을 해주세요.")
+            return []
+        
+        try:
+            # 구독 채널 목록 가져오기
+            subscriptions = self.get_subscriptions(max_results=100)
+            if not subscriptions:
+                return []
+            
+            # 시간 필터 설정
+            published_after = None
+            if time_filter == '1d':
+                published_after = datetime.now() - timedelta(days=1)
+            elif time_filter == '1w':
+                published_after = datetime.now() - timedelta(weeks=1)
+            elif time_filter == '1m':
+                published_after = datetime.now() - timedelta(days=30)
+            elif time_filter == 'latest':
+                published_after = datetime.now() - timedelta(hours=6)
+            
+            published_after_str = published_after.isoformat() + 'Z' if published_after else None
+            
+            all_videos = []
+            
+            # 각 구독 채널의 최신 동영상 가져오기
+            for subscription in subscriptions:
+                try:
+                    request = self.youtube_service.search().list(
+                        part='snippet',
+                        channelId=subscription['channel_id'],
+                        type='video',
+                        order='date',
+                        maxResults=10,  # 채널당 최대 10개
+                        publishedAfter=published_after_str
+                    )
+                    
+                    response = request.execute()
+                    
+                    for item in response['items']:
+                        video = {
+                            'video_id': item['id']['videoId'],
+                            'title': item['snippet']['title'],
+                            'description': item['snippet']['description'],
+                            'channel_id': item['snippet']['channelId'],
+                            'channel_title': item['snippet']['channelTitle'],
+                            'published_at': item['snippet']['publishedAt'],
+                            'thumbnail_url': item['snippet']['thumbnails']['medium']['url'],
+                            'url': f"https://www.youtube.com/watch?v={item['id']['videoId']}",
+                            'subscription': subscription['channel_title']
+                        }
+                        all_videos.append(video)
+                        
+                        if len(all_videos) >= max_results:
+                            break
+                    
+                    if len(all_videos) >= max_results:
+                        break
+                        
+                except HttpError as e:
+                    st.warning(f"채널 {subscription['channel_title']}의 동영상 가져오기 실패: {str(e)}")
+                    continue
+            
+            # 발행일 기준으로 정렬
+            all_videos.sort(key=lambda x: x['published_at'], reverse=True)
+            return all_videos[:max_results]
+            
+        except HttpError as e:
+            st.error(f"구독 동영상 가져오기 중 오류: {str(e)}")
+            return []
+
+# 전역 인스턴스
+simple_auth_handler = SimpleOAuthHandler() 

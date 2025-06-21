@@ -19,8 +19,7 @@ from config import get_youtube_api_key
 
 # OAuth 2.0 스코프
 SCOPES = [
-    'https://www.googleapis.com/auth/youtube.readonly',
-    'https://www.googleapis.com/auth/youtube.force-ssl'
+    'https://www.googleapis.com/auth/youtube.readonly'
 ]
 
 # 토큰 파일 경로

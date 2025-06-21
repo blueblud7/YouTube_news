@@ -16,9 +16,10 @@ import re
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
-from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword, get_all_editorials, save_editorial, get_editorials_by_date_range, delete_editorial
+from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword, get_all_editorials, save_editorial, get_editorials_by_date_range, delete_editorial, initialize_db
 
 # 프로젝트 모듈 임포트
+from config import load_config
 from youtube_handler import extract_video_id, get_info_by_url, get_video_transcript, extract_channel_handle, get_channel_info_by_handle
 from db_handler import save_video_data, get_summaries_for_video, generate_report, get_all_channels, add_channel, delete_channel, search_channels_by_keyword, get_all_keywords, add_keyword, delete_keyword, search_videos_by_keyword, get_all_editorials, save_editorial, get_editorials_by_date_range, delete_editorial
 from llm_handler import summarize_transcript, analyze_transcript_with_type, get_available_analysis_types
@@ -38,6 +39,13 @@ st.set_page_config(
 # 사이드바 메뉴
 def sidebar_menu():
     st.sidebar.title("YouTube 자막 분석 시스템")
+    
+    # OAuth2 인증 상태 표시
+    if st.session_state.get('google_oauth_authenticated', False):
+        st.sidebar.success("✅ Google OAuth2 인증 완료")
+    else:
+        st.sidebar.info("🔐 Google 로그인이 필요합니다")
+    
     menu = st.sidebar.radio(
         "메뉴 선택",
         ["홈", "URL 처리", "채널 및 키워드 관리", "자막 분석", "키워드 분석", "저장된 분석 보기", "신규 콘텐츠 리포트", "저장된 리포트", "뉴스", "최신 영상 분석", "구글 로그인 및 최신 동영상"]
@@ -65,6 +73,11 @@ def get_videos_with_transcript(limit=50):
 def url_processing_page():
     st.title("YouTube URL 처리")
     
+    # OAuth2 인증 확인
+    if not st.session_state.get('google_oauth_authenticated', False):
+        st.error("⚠️ **Google OAuth2 인증 필요**\n\n이 기능을 사용하려면 먼저 Google 계정으로 로그인해야 합니다.\n\n**구글 로그인 및 최신 동영상** 탭에서 로그인 후 다시 시도해주세요.")
+        return
+    
     # 미리 채워진 URL이 있는지 확인
     prefill_url = getattr(st.session_state, 'prefill_url', '')
     
@@ -84,6 +97,14 @@ def url_processing_page():
     
     if submitted and url:
         try:
+            # OAuth2 credentials 가져오기
+            from auto_oauth_setup import auto_oauth_setup
+            credentials = auto_oauth_setup.get_credentials()
+            
+            if not credentials:
+                st.error("OAuth2 인증 정보를 가져올 수 없습니다. 다시 로그인해주세요.")
+                return
+            
             # 비디오 ID 추출
             video_id = extract_video_id(url)
             if not video_id:
@@ -100,7 +121,7 @@ def url_processing_page():
             status_text.text("비디오 정보 가져오는 중...")
             progress_bar.progress(10)
             
-            video_info = get_info_by_url(f"https://www.youtube.com/watch?v={video_id}")
+            video_info = get_info_by_url(f"https://www.youtube.com/watch?v={video_id}", credentials)
             if not video_info or not video_info.get("id"):
                 st.error(f"비디오 ID {video_id}에서 정보를 가져오지 못했습니다.")
                 return
@@ -110,7 +131,7 @@ def url_processing_page():
             status_text.text("자막 추출 중...")
             
             # 자막 추출
-            transcript, lang = get_video_transcript(video_id)
+            transcript, lang = get_video_transcript(video_id, credentials)
             
             if not transcript:
                 st.error("해당 비디오에서 자막을 찾을 수 없습니다.")
@@ -170,10 +191,11 @@ def url_processing_page():
             
             progress_bar.progress(100)
             status_text.text("처리 완료!")
-            st.success("모든 처리가 완료되었습니다!")
+            st.success("✅ URL 처리 및 분석이 완료되었습니다!")
             
         except Exception as e:
             st.error(f"처리 중 오류가 발생했습니다: {str(e)}")
+            st.exception(e)
 
 # 자막 분석 페이지
 def transcript_analysis_page(selected_video_id=None):
@@ -386,252 +408,253 @@ def home_page():
 
 # 채널 및 키워드 관리 페이지
 def channel_keyword_management_page():
-    st.title("채널 및 키워드 관리")
+    """채널 및 키워드 관리 페이지 - RSS 기능 추가"""
+    st.title("📺 채널 및 키워드 관리")
     
-    # 채널 및 키워드 정보 로드
-    from config import load_config, save_config
-    config = load_config()
+    # RSS 수집기 초기화
+    from rss_collector import rss_collector
+    rss_collector.initialize_db()
     
-    tabs = st.tabs(["채널 관리", "키워드 관리"])
+    # 탭 구조
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🔗 RSS 채널 관리", 
+        "🔍 RSS 키워드 관리", 
+        "📡 RSS 수집 실행", 
+        "📊 RSS 데이터 보기"
+    ])
     
-    # 채널 관리 탭
-    with tabs[0]:
-        st.header("채널 관리")
-        
-        # 키워드로 채널 검색
-        st.subheader("채널 검색")
-        channel_search_keyword = st.text_input("키워드로 채널 검색", placeholder="채널명 또는 키워드 입력", key="channel_search")
-        
-        # 현재 등록된 채널 목록
-        if config["channels"]:
-            st.subheader("등록된 채널 목록")
-            
-            # 검색어가 있으면 필터링
-            filtered_channels = config["channels"]
-            if channel_search_keyword:
-                filtered_channels = [channel for channel in config["channels"] if channel_search_keyword.lower() in channel.lower()]
-                
-            if filtered_channels:
-                for i, channel_url in enumerate(filtered_channels):
-                    col1, col2 = st.columns([5, 1])
-                    with col1:
-                        st.write(f"{i+1}. {channel_url}")
-                    with col2:
-                        if st.button("삭제", key=f"del_channel_{i}"):
-                            # config.json에서 채널 삭제
-                            config["channels"].remove(channel_url)
-                            save_config(config)
-                            
-                            # 데이터베이스에서도 삭제
-                            from youtube_handler import extract_channel_handle, get_channel_info
-                            handle = extract_channel_handle(channel_url)
-                            channel_identifier = handle if handle else channel_url
-                            channel_info = get_channel_info(channel_identifier)
-                            if channel_info and channel_info.get("id"):
-                                from db_handler import delete_channel
-                                delete_channel(channel_info.get("id"))
-                            
-                            st.success(f"채널 '{channel_url}'이(가) 삭제되었습니다.")
-                            st.rerun()
-            else:
-                st.info(f"검색어 '{channel_search_keyword}'와 일치하는 채널이 없습니다.")
-        else:
-            st.info("등록된 채널이 없습니다.")
+    with tab1:
+        st.subheader("🔗 RSS 채널 관리")
+        st.info("YouTube 채널 URL을 입력하면 RSS 피드로 자동 수집됩니다. (API 할당량 사용 안함)")
         
         # 새 채널 추가
-        st.subheader("새 채널 추가")
-        with st.form("add_channel_form"):
-            new_channel = st.text_input("YouTube 채널 URL", placeholder="https://www.youtube.com/@channel_name")
-            channel_submit = st.form_submit_button("채널 추가")
+        with st.form("add_rss_channel"):
+            channel_url = st.text_input(
+                "YouTube 채널 URL",
+                placeholder="https://www.youtube.com/@channelname 또는 https://www.youtube.com/channel/UC...",
+                help="채널 URL을 입력하세요. RSS 피드로 자동 수집됩니다."
+            )
+            channel_title = st.text_input(
+                "채널 이름 (선택사항)",
+                placeholder="채널의 표시 이름을 입력하세요",
+                help="비워두면 자동으로 채널 ID가 사용됩니다."
+            )
             
-            if channel_submit and new_channel:
-                if new_channel in config["channels"]:
-                    st.warning(f"채널 '{new_channel}'은(는) 이미 등록되어 있습니다.")
-                else:
-                    from youtube_handler import extract_channel_handle, get_channel_info_by_handle
-                    handle = extract_channel_handle(new_channel)
-                    if not handle and not new_channel.startswith('@') and not new_channel.startswith('UC'):
-                        st.error("유효한 YouTube 채널 URL, 핸들 또는 ID가 아닙니다.")
-                    else:
-                        # 채널 정보 가져오기
-                        from youtube_handler import get_channel_info
-                        channel_identifier = handle if handle else new_channel
-                        channel_info = get_channel_info(channel_identifier)
-                        if channel_info and channel_info.get("id"):
-                            # config.json에 채널 추가
-                            from main import add_channel
-                            add_channel(new_channel)
-                            
-                            # 데이터베이스의 channels 테이블에도 추가
-                            from db_handler import add_channel as db_add_channel
-                            
-                            # 채널 ID 형식 확인
-                            channel_id = channel_info.get("id")
-                            handle = channel_info.get("custom_url", handle)
-                            
-                            # 직접 매핑된 경우 채널 ID를 데이터베이스에 적합한 형식으로 변환
-                            if channel_info.get("is_direct_mapping"):
-                                st.info(f"유튜브 API 할당량 제한으로 인해 '{channel_identifier}'를 직접 채널로 등록합니다.")
-                            
-                            db_add_channel(
-                                channel_id=channel_id,
-                                title=channel_info.get("title"),
-                                handle=handle,
-                                description=channel_info.get("description")
-                            )
-                            
-                            st.success(f"채널 '{new_channel}'이(가) 추가되었습니다.")
-                            st.rerun()
-                        else:
-                            st.error(f"채널 '{handle}'의 정보를 가져오지 못했습니다.")
-    
-    # 키워드 관리 탭
-    with tabs[1]:
-        st.header("키워드 관리")
+            col1, col2 = st.columns(2)
+            with col1:
+                submitted = st.form_submit_button("➕ 채널 추가")
+            with col2:
+                if st.form_submit_button("📡 RSS 테스트"):
+                    if channel_url:
+                        st.info("RSS 피드 테스트 기능은 개발 중입니다.")
         
-        # 특정 채널 내에서 키워드 검색 옵션
-        st.subheader("채널 내 키워드 검색")
+        if submitted and channel_url:
+            rss_collector.add_channel(channel_url, channel_title)
         
-        # 채널 선택 드롭다운
-        channel_options = ["모든 채널"] + config["channels"]
-        selected_channel = st.selectbox("검색할 채널 선택", channel_options, key="keyword_channel_select")
+        # 채널 목록 표시
+        st.markdown("### 📋 등록된 RSS 채널")
+        channels = rss_collector.get_all_channels()
         
-        # 현재 등록된 키워드 목록
-        if config["keywords"]:
-            st.subheader("등록된 키워드 목록")
-            
-            # 특정 채널을 선택한 경우 해당 정보 표시
-            if selected_channel != "모든 채널":
-                st.info(f"선택한 채널: {selected_channel}")
-                
-                # 선택한 채널에서 키워드 검색 버튼
-                col1, col2 = st.columns([3, 1])
-                with col2:
-                    if st.button("채널에서 키워드 검색", key="search_in_channel"):
-                        with st.spinner("채널에서 키워드 검색 중..."):
-                            # 채널 ID 추출
-                            channel_handle = extract_channel_handle(selected_channel)
-                            if channel_handle:
-                                channel_info = get_channel_info_by_handle(channel_handle)
-                                if channel_info:
-                                    channel_id = channel_info.get("id")
-                                    st.session_state.channel_id_for_search = channel_id
-                                    st.session_state.channel_name_for_search = channel_info.get("title")
-                                    st.success(f"채널 ID: {channel_id} ({channel_info.get('title')}) 검색 준비 완료")
-                                else:
-                                    st.error("채널 정보를 가져오지 못했습니다.")
-                            else:
-                                st.error("채널 핸들을 추출하지 못했습니다.")
-            
-            for i, keyword in enumerate(config["keywords"]):
-                col1, col2, col3 = st.columns([4, 1, 1])
-                with col1:
-                    st.write(f"{i+1}. {keyword}")
-                with col2:
-                    # 채널 ID가 세션에 있으면 해당 채널에서 키워드 검색 버튼 추가
-                    if st.session_state.get("channel_id_for_search") and selected_channel != "모든 채널":
-                        if st.button(f"검색", key=f"search_keyword_{i}"):
-                            from youtube_handler import search_videos_by_keyword
-                            channel_id = st.session_state.channel_id_for_search
-                            channel_name = st.session_state.channel_name_for_search
-                            with st.spinner(f"'{channel_name}' 채널에서 '{keyword}' 검색 중..."):
-                                videos = search_videos_by_keyword(keyword, channel_id=channel_id, max_results=5)
-                                if videos:
-                                    st.success(f"'{channel_name}' 채널에서 '{keyword}' 키워드로 {len(videos)}개의 동영상을 찾았습니다.")
-                                    for video in videos:
-                                        st.markdown(f"**{video['title']}**")
-                                        st.markdown(f"[YouTube에서 보기](https://www.youtube.com/watch?v={video['video_id']})")
-                                else:
-                                    st.warning(f"'{channel_name}' 채널에서 '{keyword}' 키워드에 해당하는 동영상을 찾지 못했습니다.")
-                with col3:
-                    if st.button("삭제", key=f"del_keyword_{i}"):
-                        config["keywords"].remove(keyword)
-                        save_config(config)
-                        st.success(f"키워드 '{keyword}'이(가) 삭제되었습니다.")
-                        st.rerun()
+        if channels:
+            for channel in channels:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{channel['title']}**")
+                        st.markdown(f"`{channel['channel_id']}`")
+                        if channel['last_checked']:
+                            st.caption(f"마지막 체크: {channel['last_checked'][:19]}")
+                    
+                    with col2:
+                        status = "🟢 활성" if channel['is_active'] else "🔴 비활성"
+                        st.markdown(status)
+                    
+                    with col3:
+                        if st.button("🗑️ 삭제", key=f"delete_channel_{channel['id']}"):
+                            # 삭제 로직 구현 필요
+                            st.info("삭제 기능은 개발 중입니다.")
+                    
+                    st.markdown("---")
         else:
-            st.info("등록된 키워드가 없습니다.")
+            st.info("등록된 RSS 채널이 없습니다. 위에서 채널을 추가해보세요!")
+    
+    with tab2:
+        st.subheader("🔍 RSS 키워드 관리")
+        st.info("관심 키워드를 등록하면 RSS 수집된 비디오에서 검색됩니다.")
         
         # 새 키워드 추가
-        st.subheader("새 키워드 추가")
-        with st.form("add_keyword_form"):
-            new_keyword = st.text_input("검색 키워드", placeholder="검색할 키워드 입력")
+        with st.form("add_rss_keyword"):
+            keyword = st.text_input(
+                "키워드",
+                placeholder="예: AI, 기술, 뉴스, 게임...",
+                help="관심 키워드를 입력하세요."
+            )
             
-            # 선택한 채널에서 키워드 검색 옵션 추가
-            if selected_channel != "모든 채널":
-                search_in_selected_channel = st.checkbox(f"'{selected_channel}' 채널에서 검색")
-            else:
-                search_in_selected_channel = False
-                
-            keyword_submit = st.form_submit_button("키워드 추가")
-            
-            if keyword_submit and new_keyword:
-                if new_keyword in config["keywords"]:
-                    st.warning(f"키워드 '{new_keyword}'은(는) 이미 등록되어 있습니다.")
-                else:
-                    # 키워드 추가
-                    from main import add_keyword
-                    add_keyword(new_keyword)
-                    st.success(f"키워드 '{new_keyword}'이(가) 추가되었습니다.")
-                    
-                    # 선택한 채널에서 키워드 검색
-                    if search_in_selected_channel:
-                        from youtube_handler import extract_channel_handle, get_channel_info_by_handle, search_videos_by_keyword
-                        channel_handle = extract_channel_handle(selected_channel)
-                        if channel_handle:
-                            channel_info = get_channel_info_by_handle(channel_handle)
-                            if channel_info:
-                                channel_id = channel_info.get("id")
-                                channel_name = channel_info.get("title")
-                                with st.spinner(f"'{channel_name}' 채널에서 '{new_keyword}' 검색 중..."):
-                                    videos = search_videos_by_keyword(new_keyword, channel_id=channel_id, max_results=5)
-                                    if videos:
-                                        st.success(f"'{channel_name}' 채널에서 '{new_keyword}' 키워드로 {len(videos)}개의 동영상을 찾았습니다.")
-                                        for video in videos:
-                                            st.markdown(f"**{video['title']}**")
-                                            st.markdown(f"[YouTube에서 보기](https://www.youtube.com/watch?v={video['video_id']})")
-                                    else:
-                                        st.warning(f"'{channel_name}' 채널에서 '{new_keyword}' 키워드에 해당하는 동영상을 찾지 못했습니다.")
-                            else:
-                                st.error("채널 정보를 가져오지 못했습니다.")
-                        else:
-                            st.error("채널 핸들을 추출하지 못했습니다.")
-                    
-                    st.rerun()
-    
-    # 데이터 수집 실행
-    st.header("데이터 수집 실행")
-    
-    with st.form("collect_data_form"):
-        st.subheader("등록된 채널과 키워드로 데이터 수집")
+            submitted = st.form_submit_button("➕ 키워드 추가")
         
-        analysis_types = st.multiselect(
-            "분석 유형 선택",
-            options=[t["code"] for t in get_available_analysis_types()],
-            default=["summary"],
-            format_func=lambda x: next((t["description"] for t in get_available_analysis_types() if t["code"] == x), x)
+        if submitted and keyword:
+            rss_collector.add_keyword(keyword)
+        
+        # 키워드 목록 표시
+        st.markdown("### 📋 등록된 키워드")
+        keywords = rss_collector.get_all_keywords()
+        
+        if keywords:
+            for keyword in keywords:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{keyword['keyword']}**")
+                        st.caption(f"등록: {keyword['created_at'][:19]}")
+                    
+                    with col2:
+                        status = "🟢 활성" if keyword['is_active'] else "🔴 비활성"
+                        st.markdown(status)
+                    
+                    with col3:
+                        if st.button("🗑️ 삭제", key=f"delete_keyword_{keyword['id']}"):
+                            # 삭제 로직 구현 필요
+                            st.info("삭제 기능은 개발 중입니다.")
+                    
+                    st.markdown("---")
+        else:
+            st.info("등록된 키워드가 없습니다. 위에서 키워드를 추가해보세요!")
+    
+    with tab3:
+        st.subheader("📡 RSS 수집 실행")
+        st.info("등록된 모든 채널에서 RSS 피드를 수집합니다.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚀 RSS 수집 시작", key="start_rss_collection"):
+                result = rss_collector.collect_all_channels()
+                
+                if result['total_channels'] > 0:
+                    st.success(f"""
+                    📊 수집 결과:
+                    - 처리된 채널: {result['total_channels']}개
+                    - 발견된 비디오: {result['total_videos']}개
+                    - 새로 저장된 비디오: {result['new_videos']}개
+                    """)
+        
+        with col2:
+            if st.button("🔄 마지막 수집 결과 확인", key="check_last_collection"):
+                st.info("마지막 수집 결과 확인 기능은 개발 중입니다.")
+        
+        # 수집 설정
+        st.markdown("### ⚙️ 수집 설정")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            auto_collect = st.checkbox("자동 수집 활성화", value=False)
+            if auto_collect:
+                interval = st.selectbox(
+                    "수집 간격",
+                    options=[1, 3, 6, 12, 24],
+                    format_func=lambda x: f"{x}시간",
+                    index=2
+                )
+                st.info(f"자동 수집이 {interval}시간마다 실행됩니다.")
+        
+        with col2:
+            max_videos_per_channel = st.number_input(
+                "채널당 최대 비디오 수",
+                min_value=5,
+                max_value=50,
+                value=20,
+                help="각 채널에서 최대 몇 개의 비디오를 수집할지 설정합니다."
+            )
+    
+    with tab4:
+        st.subheader("📊 RSS 데이터 보기")
+        
+        # 시간 범위 선택
+        time_range = st.selectbox(
+            "시간 범위",
+            options=[1, 3, 6, 12, 24, 72],
+            format_func=lambda x: f"최근 {x}시간",
+            index=3
         )
         
-        collect_submit = st.form_submit_button("데이터 수집 시작")
+        # 최근 비디오 가져오기
+        recent_videos = rss_collector.get_recent_videos(hours=time_range, limit=50)
         
-        if collect_submit:
-            if not config["channels"] and not config["keywords"]:
-                st.error("데이터 수집을 시작하려면 최소 하나의 채널 또는 키워드를 등록해야 합니다.")
+        if recent_videos:
+            st.success(f"📺 최근 {time_range}시간 동안 {len(recent_videos)}개의 비디오가 수집되었습니다.")
+            
+            # 비디오 목록 표시
+            for i, video in enumerate(recent_videos):
+                with st.container():
+                    col1, col2 = st.columns([1, 3])
+                    
+                    with col1:
+                        if video['thumbnail_url']:
+                            st.image(video['thumbnail_url'], width=120)
+                        else:
+                            st.markdown("🖼️ 썸네일 없음")
+                    
+                    with col2:
+                        st.markdown(f"**{video['title']}**")
+                        st.markdown(f"**채널**: {video['channel_title']}")
+                        st.markdown(f"**업로드**: {video['published_at'][:19]}")
+                        
+                        if video['description']:
+                            desc_preview = video['description'][:100] + "..." if len(video['description']) > 100 else video['description']
+                            st.markdown(f"📝 {desc_preview}")
+                        
+                        col_a, col_b, col_c = st.columns(3)
+                        with col_a:
+                            if st.button(f"🔗 보기", key=f"view_rss_{i}"):
+                                st.markdown(f"[YouTube에서 보기]({video['video_url']})")
+                        
+                        with col_b:
+                            if st.button(f"📊 분석", key=f"analyze_rss_{i}"):
+                                st.session_state.selected_video_url = video['video_url']
+                                st.rerun()
+                        
+                        with col_c:
+                            if st.button(f"💾 저장", key=f"save_rss_{i}"):
+                                st.info("저장 기능은 개발 중입니다.")
+                    
+                    st.markdown("---")
+        else:
+            st.info(f"최근 {time_range}시간 동안 수집된 비디오가 없습니다.")
+        
+        # 키워드 검색
+        st.markdown("### 🔍 키워드 검색")
+        search_keyword = st.text_input("검색 키워드", placeholder="검색할 키워드를 입력하세요")
+        
+        if search_keyword:
+            search_results = rss_collector.search_videos_by_keyword(search_keyword, hours=time_range)
+            
+            if search_results:
+                st.success(f"🔍 '{search_keyword}' 키워드로 {len(search_results)}개의 비디오를 찾았습니다.")
+                
+                for i, video in enumerate(search_results):
+                    with st.container():
+                        col1, col2 = st.columns([1, 3])
+                        
+                        with col1:
+                            if video['thumbnail_url']:
+                                st.image(video['thumbnail_url'], width=120)
+                            else:
+                                st.markdown("🖼️ 썸네일 없음")
+                        
+                        with col2:
+                            st.markdown(f"**{video['title']}**")
+                            st.markdown(f"**채널**: {video['channel_title']}")
+                            st.markdown(f"**업로드**: {video['published_at'][:19]}")
+                            
+                            if st.button(f"📊 분석", key=f"analyze_search_{i}"):
+                                st.session_state.selected_video_url = video['video_url']
+                                st.rerun()
+                        
+                        st.markdown("---")
             else:
-                try:
-                    with st.spinner("데이터 수집 중... 이 작업은 몇 분 정도 소요될 수 있습니다."):
-                        # 데이터 수집 실행
-                        from main import collect_data
-                        collect_data(analysis_types)
-                        st.success("데이터 수집이 완료되었습니다.")
-                        
-                        # 홈으로 리디렉션
-                        st.experimental_set_query_params()  # URL 파라미터 제거
-                        time.sleep(2)  # 2초 대기
-                        st.experimental_rerun()  # 페이지 새로고침
-                        
-                except Exception as e:
-                    st.error(f"데이터 수집 중 오류가 발생했습니다: {str(e)}")
+                st.info(f"'{search_keyword}' 키워드로 검색된 비디오가 없습니다.")
 
 # 키워드 분석 페이지
 def keyword_analysis_page():
@@ -1589,37 +1612,39 @@ def newspaper_section():
 # 메인 함수
 def main():
     # 세션 상태 초기화
-    if "page" not in st.session_state:
-        st.session_state.page = "home"
+    if 'google_oauth_authenticated' not in st.session_state:
+        st.session_state.google_oauth_authenticated = False
+        st.session_state.google_oauth_user_info = None
     
-    if "channel_id_for_search" not in st.session_state:
-        st.session_state.channel_id_for_search = None
-        
-    if "channel_name_for_search" not in st.session_state:
-        st.session_state.channel_name_for_search = None
+    # 데이터베이스 초기화
+    initialize_db()
     
-    # 기존에 config.json에 저장된 채널을 DB에 동기화
-    from config import load_config
-    from youtube_handler import extract_channel_handle, get_channel_info_by_handle
-    from db_handler import get_all_channels, add_channel
-    
+    # 구성 파일 로드
     config = load_config()
+    
+    # DB에서 채널 목록 가져오기
     db_channels = get_all_channels()
     db_channel_ids = [channel.get("channel_id") for channel in db_channels]
     
-    # config.json에 있는 채널들을 DB에 추가
-    for channel_url in config["channels"]:
-        handle = extract_channel_handle(channel_url)
-        if handle:
-            channel_info = get_channel_info_by_handle(handle)
-            if channel_info and channel_info.get("id") and channel_info.get("id") not in db_channel_ids:
-                add_channel(
-                    channel_id=channel_info.get("id"),
-                    title=channel_info.get("title"),
-                    handle=handle,
-                    description=channel_info.get("description")
-                )
-                print(f"채널 '{channel_info.get('title')}' ({handle})가 DB에 추가되었습니다.")
+    # config.json에 있는 채널들을 DB에 추가 (OAuth2 인증 필요)
+    # 이 부분은 OAuth2 인증 후에만 실행되어야 함
+    if st.session_state.google_oauth_authenticated:
+        from auto_oauth_setup import auto_oauth_setup
+        credentials = auto_oauth_setup.get_credentials()
+        
+        if credentials:
+            for channel_url in config["channels"]:
+                handle = extract_channel_handle(channel_url)
+                if handle:
+                    channel_info = get_channel_info_by_handle(handle, credentials)
+                    if channel_info and channel_info.get("id") and channel_info.get("id") not in db_channel_ids:
+                        add_channel(
+                            channel_id=channel_info.get("id"),
+                            title=channel_info.get("title"),
+                            handle=handle,
+                            description=channel_info.get("description")
+                        )
+                        print(f"채널 '{channel_info.get('title')}' ({handle})가 DB에 추가되었습니다.")
     
     # 사이드바 메뉴 가져오기
     menu = sidebar_menu()
@@ -1656,113 +1681,266 @@ def main():
         google_login_latest_videos_page()
 
 def google_login_latest_videos_page():
-    """구글 로그인을 통한 최신 동영상 검색 페이지"""
+    """구글 로그인을 통한 최신 동영상 검색 페이지 - 개선된 버전"""
     st.title("🔐 구글 로그인 및 최신 동영상")
     
-    # 구글 인증 핸들러 임포트
-    from google_auth_handler import auth_handler
+    # 새로운 자동 OAuth 설정 핸들러 임포트
+    from auto_oauth_setup import auto_oauth_setup
     
-    # 탭 생성
-    tab1, tab2, tab3, tab4 = st.tabs(["🔑 구글 로그인", "📺 구독 채널 동영상", "🔍 키워드 검색", "⚙️ 간단 검색 (API 키만)"])
+    # 영구 저장된 로그인 정보 확인
+    saved_credentials_file = "saved_google_credentials.json"
+    has_saved_credentials = os.path.exists(saved_credentials_file)
     
-    with tab1:
-        st.subheader("구글 계정 로그인")
+    # 세션 상태에서 로그인 정보 확인
+    if 'google_oauth_authenticated' not in st.session_state:
+        st.session_state.google_oauth_authenticated = False
+        st.session_state.google_oauth_user_info = None
+    
+    # 저장된 자격 증명이 있으면 자동 로그인 시도
+    if has_saved_credentials and not st.session_state.google_oauth_authenticated:
+        try:
+            with open(saved_credentials_file, 'r') as f:
+                saved_creds = json.load(f)
+            
+            # 저장된 자격 증명으로 로그인 시도
+            if auto_oauth_setup.login_with_saved_credentials(saved_creds):
+                st.session_state.google_oauth_authenticated = True
+                st.session_state.google_oauth_user_info = {
+                    'authenticated': True,
+                    'timestamp': datetime.now().isoformat(),
+                    'email': saved_creds.get('email', 'Unknown')
+                }
+                st.success(f"✅ 저장된 계정으로 자동 로그인되었습니다: {saved_creds.get('email', 'Unknown')}")
+        except Exception as e:
+            st.warning(f"저장된 로그인 정보로 자동 로그인 실패: {str(e)}")
+    
+    # 로그인 상태 확인
+    is_authenticated = st.session_state.google_oauth_authenticated or auto_oauth_setup.authenticated
+    
+    # 최초 접속 시 로그인 안내 표시
+    if not is_authenticated:
         st.markdown("""
-        YouTube API를 사용하여 다음 기능들을 이용하려면 구글 계정으로 로그인이 필요합니다:
+        ## 🎯 **YouTube 뉴스 시스템에 오신 것을 환영합니다!**
         
+        ### 📋 **사용 가능한 기능들**
+        
+        **🔐 구글 로그인 후 사용 가능:**
         - 📺 **구독 채널 목록 확인**
         - 🎬 **구독 채널의 최신 동영상 가져오기**
         - 🔍 **키워드 기반 동영상 검색**
+        
+        **⚙️ API 키만으로 사용 가능:**
+        - 🔍 **간단 키워드 검색**
+        - 📊 **기본 동영상 정보 조회**
         """)
         
-        # 로그인 상태 확인
-        if auth_handler.youtube_service:
-            st.success("✅ 이미 로그인되어 있습니다!")
-            
-            # 로그아웃 버튼
-            if st.button("로그아웃"):
-                import os
-                if os.path.exists('token.pickle'):
-                    os.remove('token.pickle')
-                auth_handler.creds = None
-                auth_handler.youtube_service = None
-                st.success("로그아웃되었습니다.")
-                st.rerun()
-        else:
-            st.info("구글 계정으로 로그인하세요.")
-            
-            # 자동 설정 도구
-            with st.expander("🔧 자동 설정 도구"):
-                st.markdown("### 1단계: credentials.json 템플릿 생성")
-                if st.button("템플릿 파일 생성"):
-                    template_file = auth_handler.create_credentials_template()
-                    st.success(f"✅ {template_file} 파일이 생성되었습니다!")
-                    st.info("이제 이 파일을 참고하여 실제 credentials.json을 만들어주세요.")
+        # 저장된 자격 증명이 있는 경우
+        if has_saved_credentials:
+            st.markdown("### 🔑 **저장된 로그인 정보 발견!**")
+            try:
+                with open(saved_credentials_file, 'r') as f:
+                    saved_creds = json.load(f)
                 
-                st.markdown("### 2단계: Google Cloud Console 설정")
-                st.markdown("""
-                1. **[Google Cloud Console](https://console.cloud.google.com/)**에 접속
-                2. 새 프로젝트 생성 또는 기존 프로젝트 선택
-                3. **YouTube Data API v3** 활성화
-                4. **사용자 인증 정보** 메뉴로 이동
-                5. **OAuth 2.0 클라이언트 ID** 생성 (데스크톱 앱)
-                6. 다운로드한 JSON 파일을 `credentials.json`으로 이름 변경
-                7. 프로젝트 루트 디렉토리에 업로드
-                """)
-            
-            # 로그인 버튼
-            if st.button("구글 로그인"):
-                with st.spinner("구글 로그인 중..."):
-                    if auth_handler.authenticate():
-                        st.success("✅ 로그인 성공!")
-                        st.rerun()
-                    else:
-                        st.error("❌ 로그인 실패. credentials.json 파일을 확인하세요.")
+                token_type = saved_creds.get('token_type', 'access_token_only')
+                email = saved_creds.get('email', 'Unknown')
+                
+                if token_type == 'oauth2_with_refresh':
+                    st.success(f"**등록된 계정**: {email} (자동 갱신 가능)")
+                else:
+                    st.info(f"**등록된 계정**: {email} (수동 갱신 필요)")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 저장된 계정으로 로그인", key="login_saved"):
+                        if auto_oauth_setup.login_with_saved_credentials(saved_creds):
+                            st.session_state.google_oauth_authenticated = True
+                            st.session_state.google_oauth_user_info = {
+                                'authenticated': True,
+                                'timestamp': datetime.now().isoformat(),
+                                'email': email
+                            }
+                            st.rerun()
+                        else:
+                            st.error("저장된 계정으로 로그인에 실패했습니다.")
+                
+                with col2:
+                    if st.button("🗑️ 저장된 정보 삭제", key="delete_saved"):
+                        try:
+                            os.remove(saved_credentials_file)
+                            st.success("저장된 로그인 정보가 삭제되었습니다.")
+                            st.rerun()
+                        except:
+                            st.error("저장된 정보 삭제에 실패했습니다.")
+            except:
+                st.warning("저장된 로그인 정보를 읽을 수 없습니다.")
         
-        # 설정 안내
-        with st.expander("📋 상세 설정 방법"):
-            st.markdown("""
-            ### 1. Google Cloud Console 설정
-            1. [Google Cloud Console](https://console.cloud.google.com/)에 접속
-            2. 새 프로젝트 생성 또는 기존 프로젝트 선택
-            3. YouTube Data API v3 활성화
-            
-            ### 2. OAuth 2.0 클라이언트 ID 생성
-            1. "API 및 서비스" > "사용자 인증 정보" 메뉴로 이동
-            2. "사용자 인증 정보 만들기" > "OAuth 2.0 클라이언트 ID" 선택
-            3. 애플리케이션 유형: "데스크톱 앱" 선택
-            4. 클라이언트 ID 생성 후 JSON 파일 다운로드
-            
-            ### 3. credentials.json 파일 업로드
-            1. 다운로드한 JSON 파일을 `credentials.json`으로 이름 변경
-            2. 프로젝트 루트 디렉토리에 업로드
-            """)
-    
-    with tab2:
-        st.subheader("구독 채널 최신 동영상")
-        
-        if not auth_handler.youtube_service:
-            st.warning("먼저 구글 로그인을 해주세요.")
-            st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
+        # 새로운 로그인 옵션
+        st.markdown("### 🔐 **새로운 구글 계정으로 로그인**")
+        if has_saved_credentials:
+            st.markdown("다른 구글 계정으로 로그인하려면 아래 방법을 사용하세요.")
         else:
-            # 시간 필터 선택
-            time_filter = st.selectbox(
-                "시간 범위 선택",
-                options=[
-                    ("latest", "최신 (6시간 이내)"),
-                    ("1d", "1일 이내"),
-                    ("1w", "1주일 이내"),
-                    ("1m", "1개월 이내")
-                ],
-                format_func=lambda x: x[1]
-            )[0]
+            st.markdown("구글 계정으로 로그인하려면 아래 방법을 사용하세요.")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🌐 OAuth Playground", key="new_oauth_login"):
+                st.session_state.show_oauth_setup = True
+                st.session_state.oauth_method = "playground"
+                st.rerun()
+        
+        with col2:
+            if st.button("🔑 Access Token", key="direct_token_login"):
+                st.session_state.show_oauth_setup = True
+                st.session_state.oauth_method = "direct"
+                st.rerun()
+        
+        with col3:
+            if st.button("⚙️ 고급 OAuth", key="advanced_oauth_login"):
+                st.session_state.show_oauth_setup = True
+                st.session_state.oauth_method = "advanced"
+                st.rerun()
+    
+    # OAuth 설정 화면 표시
+    if st.session_state.get('show_oauth_setup', False):
+        st.markdown("### 🔐 새로운 구글 계정 로그인 설정")
+        
+        # 방법 선택
+        oauth_method = st.session_state.get('oauth_method', 'playground')
+        if oauth_method == "direct":
+            method = "🔑 Access Token 직접 입력"
+        elif oauth_method == "advanced":
+            method = "⚙️ 고급 OAuth 설정 (권장)"
+        else:
+            method = "🌐 Google OAuth Playground (간단)"
+        
+        # OAuth 설정 실행
+        if auto_oauth_setup.setup_oauth_automatically():
+            st.session_state.google_oauth_authenticated = True
+            st.session_state.google_oauth_user_info = {
+                'authenticated': True,
+                'timestamp': datetime.now().isoformat(),
+                'email': auto_oauth_setup.user_email or 'Unknown'
+            }
+            st.session_state.show_oauth_setup = False
             
-            # 최대 결과 수 선택
-            max_results = st.slider("최대 동영상 수", 10, 100, 50)
+            # 로그인 정보 영구 저장
+            if auto_oauth_setup.save_credentials_permanently(saved_credentials_file):
+                st.success("✅ 로그인 정보가 영구 저장되었습니다!")
             
-            if st.button("구독 채널 동영상 가져오기"):
-                with st.spinner("구독 채널 동영상을 가져오는 중..."):
-                    videos = auth_handler.get_subscription_videos(
+            st.rerun()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("❌ 설정 취소", key="cancel_oauth_setup"):
+                st.session_state.show_oauth_setup = False
+                st.rerun()
+        
+        with col2:
+            if st.button("🔄 다른 방법으로 시도", key="try_different_method"):
+                st.session_state.show_oauth_setup = False
+                st.rerun()
+    
+    # 로그인된 경우 탭 구조 표시
+    if is_authenticated:
+        # 로그인 상태 표시
+        user_info = st.session_state.google_oauth_user_info or auto_oauth_setup.user_info
+        if user_info:
+            st.markdown(f"""
+            ### ✅ **로그인 상태**
+            - **계정**: {user_info.get('email', 'Unknown')}
+            - **로그인 시간**: {user_info.get('timestamp', 'Unknown')}
+            """)
+        
+        # 탭 구조
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🔑 로그인 상태", 
+            "📺 구독 채널 동영상", 
+            "🔍 키워드 검색", 
+            "⚙️ 간단 검색 (API 키만)"
+        ])
+        
+        with tab1:
+            st.subheader("🔑 로그인 관리")
+            
+            if user_info:
+                st.info(f"**현재 로그인된 계정**: {user_info.get('email', 'Unknown')}")
+                st.info(f"**로그인 시간**: {user_info.get('timestamp', 'Unknown')}")
+                
+                # 토큰 상태 확인
+                token_status = auto_oauth_setup.check_token_status()
+                if token_status:
+                    st.markdown("### 🔍 토큰 상태")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if token_status.get('token_type') == 'oauth2_with_refresh':
+                            st.success("🔄 자동 갱신 가능")
+                        else:
+                            st.warning("⚠️ 수동 갱신 필요")
+                    
+                    with col2:
+                        if token_status.get('is_expired', False):
+                            st.error("❌ 토큰 만료됨")
+                        else:
+                            st.success("✅ 토큰 유효함")
+                    
+                    if token_status.get('expires_at') != 'unknown':
+                        st.info(f"**만료 시간**: {token_status.get('expires_at')}")
+                    
+                    # 토큰 갱신 버튼
+                    if token_status.get('can_refresh', False):
+                        if st.button("🔄 토큰 갱신", key="refresh_token"):
+                            if auto_oauth_setup.refresh_token_manually():
+                                st.rerun()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("🔄 새로고침", key="refresh_login"):
+                    st.rerun()
+            
+            with col2:
+                if st.button("🚪 로그아웃", key="logout_button"):
+                    st.session_state.google_oauth_authenticated = False
+                    st.session_state.google_oauth_user_info = None
+                    st.session_state.show_oauth_setup = False
+                    st.rerun()
+            
+            with col3:
+                if st.button("🗑️ 저장된 정보 삭제", key="delete_saved_from_tab"):
+                    try:
+                        if os.path.exists(saved_credentials_file):
+                            os.remove(saved_credentials_file)
+                            st.success("저장된 로그인 정보가 삭제되었습니다.")
+                        else:
+                            st.info("저장된 로그인 정보가 없습니다.")
+                    except:
+                        st.error("저장된 정보 삭제에 실패했습니다.")
+        
+        with tab2:
+            st.subheader("📺 구독 채널 최신 동영상")
+            
+            if not is_authenticated:
+                st.warning("먼저 구글 로그인을 해주세요.")
+                st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
+            else:
+                # 시간 필터 선택
+                time_filter = st.selectbox(
+                    "시간 범위 선택",
+                    options=[
+                        ("latest", "최신 (6시간 이내)"),
+                        ("1d", "1일 이내"),
+                        ("1w", "1주일 이내"),
+                        ("1m", "1개월 이내")
+                    ],
+                    format_func=lambda x: x[1],
+                    key="subscription_time_filter"
+                )[0]
+                
+                # 최대 결과 수 선택
+                max_results = st.slider("최대 동영상 수", 10, 100, 50, key="subscription_max_results")
+                
+                if st.button("구독 채널 동영상 가져오기", key="subscription_fetch"):
+                    videos = auto_oauth_setup.get_subscription_videos(
                         time_filter=time_filter,
                         max_results=max_results
                     )
@@ -1780,59 +1958,46 @@ def google_login_latest_videos_page():
                                 
                                 with col2:
                                     st.markdown(f"**{video['title']}**")
-                                    st.markdown(f"📺 {video['channel_title']}")
-                                    if 'subscription' in video:
-                                        st.markdown(f"🔔 구독 채널: {video['subscription']}")
+                                    st.markdown(f"**채널**: {video['channel_title']}")
+                                    st.markdown(f"**구독 채널**: {video.get('subscription', 'Unknown')}")
+                                    st.markdown(f"**업로드**: {video['published_at'][:10]}")
                                     
-                                    # 발행일 포맷팅
-                                    published_date = datetime.fromisoformat(
-                                        video['published_at'].replace('Z', '+00:00')
-                                    ).strftime("%Y-%m-%d %H:%M")
-                                    st.markdown(f"📅 {published_date}")
-                                    
-                                    # 링크 버튼
-                                    if st.button(f"보기 {i+1}", key=f"watch_{i}"):
-                                        st.markdown(f"[YouTube에서 보기]({video['url']})")
-                                    
-                                    # 분석 버튼
-                                    if st.button(f"분석 {i+1}", key=f"analyze_{i}"):
+                                    if st.button(f"분석하기", key=f"analyze_subscription_{i}"):
                                         st.session_state.selected_video_url = video['url']
                                         st.rerun()
-                        
-                        st.markdown("---")
-                        st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
+                                
+                                st.markdown("---")
                     else:
-                        st.warning("해당 기간에 업로드된 구독 채널 동영상이 없습니다.")
-    
-    with tab3:
-        st.subheader("키워드 기반 동영상 검색")
+                        st.warning("조건에 맞는 동영상을 찾을 수 없습니다.")
         
-        if not auth_handler.youtube_service:
-            st.warning("먼저 구글 로그인을 해주세요.")
-            st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
-        else:
-            # 검색 키워드 입력
-            keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...")
+        with tab3:
+            st.subheader("🔍 키워드 기반 동영상 검색")
             
-            # 시간 필터 선택
-            time_filter = st.selectbox(
-                "시간 범위 선택",
-                options=[
-                    ("latest", "최신 (6시간 이내)"),
-                    ("1d", "1일 이내"),
-                    ("1w", "1주일 이내"),
-                    ("1m", "1개월 이내")
-                ],
-                format_func=lambda x: x[1],
-                key="keyword_time_filter"
-            )[0]
-            
-            # 최대 결과 수 선택
-            max_results = st.slider("최대 동영상 수", 10, 100, 50, key="keyword_max_results")
-            
-            if st.button("키워드로 검색") and keyword:
-                with st.spinner(f"'{keyword}' 키워드로 동영상을 검색하는 중..."):
-                    videos = auth_handler.search_videos_by_keyword(
+            if not is_authenticated:
+                st.warning("먼저 구글 로그인을 해주세요.")
+                st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
+            else:
+                # 검색 키워드 입력
+                keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...", key="oauth_keyword_input")
+                
+                # 시간 필터 선택
+                time_filter = st.selectbox(
+                    "시간 범위 선택",
+                    options=[
+                        ("latest", "최신 (6시간 이내)"),
+                        ("1d", "1일 이내"),
+                        ("1w", "1주일 이내"),
+                        ("1m", "1개월 이내")
+                    ],
+                    format_func=lambda x: x[1],
+                    key="keyword_time_filter"
+                )[0]
+                
+                # 최대 결과 수 선택
+                max_results = st.slider("최대 동영상 수", 10, 100, 50, key="keyword_max_results")
+                
+                if st.button("키워드로 검색", key="oauth_keyword_search") and keyword:
+                    videos = auto_oauth_setup.search_videos_by_keyword(
                         keyword=keyword,
                         time_filter=time_filter,
                         max_results=max_results
@@ -1851,108 +2016,30 @@ def google_login_latest_videos_page():
                                 
                                 with col2:
                                     st.markdown(f"**{video['title']}**")
-                                    st.markdown(f"📺 {video['channel_title']}")
+                                    st.markdown(f"**채널**: {video['channel_title']}")
+                                    st.markdown(f"**업로드**: {video['published_at'][:10]}")
                                     
-                                    # 발행일 포맷팅
-                                    published_date = datetime.fromisoformat(
-                                        video['published_at'].replace('Z', '+00:00')
-                                    ).strftime("%Y-%m-%d %H:%M")
-                                    st.markdown(f"📅 {published_date}")
-                                    
-                                    # 설명 미리보기
-                                    if video['description']:
-                                        desc_preview = video['description'][:100] + "..." if len(video['description']) > 100 else video['description']
-                                        st.markdown(f"📝 {desc_preview}")
-                                    
-                                    # 링크 버튼
-                                    if st.button(f"보기 {i+1}", key=f"keyword_watch_{i}"):
-                                        st.markdown(f"[YouTube에서 보기]({video['url']})")
-                                    
-                                    # 분석 버튼
-                                    if st.button(f"분석 {i+1}", key=f"keyword_analyze_{i}"):
+                                    if st.button(f"분석하기", key=f"analyze_keyword_{i}"):
                                         st.session_state.selected_video_url = video['url']
                                         st.rerun()
-                        
-                        st.markdown("---")
-                        st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
+                                
+                                st.markdown("---")
                     else:
-                        st.warning(f"'{keyword}' 키워드로 해당 기간에 업로드된 동영상을 찾을 수 없습니다.")
-    
-    with tab4:
-        st.subheader("간단 검색 (API 키만)")
-        st.markdown("""
-        💡 **구글 로그인 없이도 사용 가능합니다!**
+                        st.warning(f"'{keyword}' 키워드로 조건에 맞는 동영상을 찾을 수 없습니다.")
         
-        YouTube API 키만 있으면 키워드 검색이 가능합니다.
-        구독 채널 기능은 사용할 수 없지만, 키워드 검색은 정상 작동합니다.
-        """)
-        
-        # 검색 키워드 입력
-        keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...", key="simple_keyword")
-        
-        # 시간 필터 선택
-        time_filter = st.selectbox(
-            "시간 범위 선택",
-            options=[
-                ("latest", "최신 (6시간 이내)"),
-                ("1d", "1일 이내"),
-                ("1w", "1주일 이내"),
-                ("1m", "1개월 이내")
-            ],
-            format_func=lambda x: x[1],
-            key="simple_time_filter"
-        )[0]
-        
-        # 최대 결과 수 선택
-        max_results = st.slider("최대 동영상 수", 10, 100, 50, key="simple_max_results")
-        
-        if st.button("간단 검색") and keyword:
-            with st.spinner(f"'{keyword}' 키워드로 동영상을 검색하는 중..."):
-                videos = auth_handler.search_videos_by_keyword_simple(
-                    keyword=keyword,
-                    time_filter=time_filter,
-                    max_results=max_results
-                )
-                
-                if videos:
-                    st.success(f"✅ '{keyword}' 키워드로 {len(videos)}개의 동영상을 찾았습니다!")
-                    
-                    # 동영상 목록 표시
-                    for i, video in enumerate(videos):
-                        with st.container():
-                            col1, col2 = st.columns([1, 3])
-                            
-                            with col1:
-                                st.image(video['thumbnail_url'], width=120)
-                            
-                            with col2:
-                                st.markdown(f"**{video['title']}**")
-                                st.markdown(f"📺 {video['channel_title']}")
-                                
-                                # 발행일 포맷팅
-                                published_date = datetime.fromisoformat(
-                                    video['published_at'].replace('Z', '+00:00')
-                                ).strftime("%Y-%m-%d %H:%M")
-                                st.markdown(f"📅 {published_date}")
-                                
-                                # 설명 미리보기
-                                if video['description']:
-                                    desc_preview = video['description'][:100] + "..." if len(video['description']) > 100 else video['description']
-                                    st.markdown(f"📝 {desc_preview}")
-                                
-                                # 링크 버튼
-                                if st.button(f"보기 {i+1}", key=f"simple_watch_{i}"):
-                                    st.markdown(f"[YouTube에서 보기]({video['url']})")
-                                
-                                # 분석 버튼
-                                if st.button(f"분석 {i+1}", key=f"simple_analyze_{i}"):
-                                    st.session_state.selected_video_url = video['url']
-                                    st.rerun()
-                    
-                    st.markdown("---")
-                    st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
-                else:
-                    st.warning(f"'{keyword}' 키워드로 해당 기간에 업로드된 동영상을 찾을 수 없습니다.")
+        with tab4:
+            st.subheader("⚙️ 간단 검색 (API 키만)")
+            st.info("이 탭은 API 키만으로 동작하는 간단한 검색 기능입니다.")
+            
+            # 검색 키워드 입력
+            simple_keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스...", key="simple_keyword_input")
+            
+            # 최대 결과 수 선택
+            simple_max_results = st.slider("최대 동영상 수", 10, 50, 20, key="simple_max_results")
+            
+            if st.button("간단 검색", key="simple_search") and simple_keyword:
+                st.info("간단 검색 기능은 현재 개발 중입니다.")
+                st.info("구글 로그인 후 '키워드 검색' 탭을 사용해보세요!")
     
     # 선택된 동영상이 있으면 분석 페이지로 이동
     if hasattr(st.session_state, 'selected_video_url') and st.session_state.selected_video_url:
@@ -1960,13 +2047,13 @@ def google_login_latest_videos_page():
         st.subheader("🎬 선택된 동영상 분석")
         st.info(f"선택된 동영상: {st.session_state.selected_video_url}")
         
-        if st.button("자막 분석 페이지로 이동"):
+        if st.button("자막 분석 페이지로 이동", key="go_to_analysis"):
             # URL 처리 페이지로 이동하고 URL 입력
             st.session_state.page = "URL 처리"
             st.session_state.prefill_url = st.session_state.selected_video_url
             st.rerun()
         
-        if st.button("선택 해제"):
+        if st.button("선택 해제", key="clear_selection"):
             del st.session_state.selected_video_url
             st.rerun()
 
