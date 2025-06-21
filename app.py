@@ -1663,7 +1663,7 @@ def google_login_latest_videos_page():
     from google_auth_handler import auth_handler
     
     # 탭 생성
-    tab1, tab2, tab3 = st.tabs(["🔑 구글 로그인", "📺 구독 채널 동영상", "🔍 키워드 검색"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔑 구글 로그인", "📺 구독 채널 동영상", "🔍 키워드 검색", "⚙️ 간단 검색 (API 키만)"])
     
     with tab1:
         st.subheader("구글 계정 로그인")
@@ -1691,6 +1691,25 @@ def google_login_latest_videos_page():
         else:
             st.info("구글 계정으로 로그인하세요.")
             
+            # 자동 설정 도구
+            with st.expander("🔧 자동 설정 도구"):
+                st.markdown("### 1단계: credentials.json 템플릿 생성")
+                if st.button("템플릿 파일 생성"):
+                    template_file = auth_handler.create_credentials_template()
+                    st.success(f"✅ {template_file} 파일이 생성되었습니다!")
+                    st.info("이제 이 파일을 참고하여 실제 credentials.json을 만들어주세요.")
+                
+                st.markdown("### 2단계: Google Cloud Console 설정")
+                st.markdown("""
+                1. **[Google Cloud Console](https://console.cloud.google.com/)**에 접속
+                2. 새 프로젝트 생성 또는 기존 프로젝트 선택
+                3. **YouTube Data API v3** 활성화
+                4. **사용자 인증 정보** 메뉴로 이동
+                5. **OAuth 2.0 클라이언트 ID** 생성 (데스크톱 앱)
+                6. 다운로드한 JSON 파일을 `credentials.json`으로 이름 변경
+                7. 프로젝트 루트 디렉토리에 업로드
+                """)
+            
             # 로그인 버튼
             if st.button("구글 로그인"):
                 with st.spinner("구글 로그인 중..."):
@@ -1701,7 +1720,7 @@ def google_login_latest_videos_page():
                         st.error("❌ 로그인 실패. credentials.json 파일을 확인하세요.")
         
         # 설정 안내
-        with st.expander("🔧 설정 방법"):
+        with st.expander("📋 상세 설정 방법"):
             st.markdown("""
             ### 1. Google Cloud Console 설정
             1. [Google Cloud Console](https://console.cloud.google.com/)에 접속
@@ -1724,6 +1743,7 @@ def google_login_latest_videos_page():
         
         if not auth_handler.youtube_service:
             st.warning("먼저 구글 로그인을 해주세요.")
+            st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
         else:
             # 시간 필터 선택
             time_filter = st.selectbox(
@@ -1789,6 +1809,7 @@ def google_login_latest_videos_page():
         
         if not auth_handler.youtube_service:
             st.warning("먼저 구글 로그인을 해주세요.")
+            st.info("💡 또는 '간단 검색 (API 키만)' 탭을 사용해보세요!")
         else:
             # 검색 키워드 입력
             keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...")
@@ -1856,6 +1877,82 @@ def google_login_latest_videos_page():
                         st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
                     else:
                         st.warning(f"'{keyword}' 키워드로 해당 기간에 업로드된 동영상을 찾을 수 없습니다.")
+    
+    with tab4:
+        st.subheader("간단 검색 (API 키만)")
+        st.markdown("""
+        💡 **구글 로그인 없이도 사용 가능합니다!**
+        
+        YouTube API 키만 있으면 키워드 검색이 가능합니다.
+        구독 채널 기능은 사용할 수 없지만, 키워드 검색은 정상 작동합니다.
+        """)
+        
+        # 검색 키워드 입력
+        keyword = st.text_input("검색 키워드", placeholder="예: AI, 기술, 뉴스, 게임...", key="simple_keyword")
+        
+        # 시간 필터 선택
+        time_filter = st.selectbox(
+            "시간 범위 선택",
+            options=[
+                ("latest", "최신 (6시간 이내)"),
+                ("1d", "1일 이내"),
+                ("1w", "1주일 이내"),
+                ("1m", "1개월 이내")
+            ],
+            format_func=lambda x: x[1],
+            key="simple_time_filter"
+        )[0]
+        
+        # 최대 결과 수 선택
+        max_results = st.slider("최대 동영상 수", 10, 100, 50, key="simple_max_results")
+        
+        if st.button("간단 검색") and keyword:
+            with st.spinner(f"'{keyword}' 키워드로 동영상을 검색하는 중..."):
+                videos = auth_handler.search_videos_by_keyword_simple(
+                    keyword=keyword,
+                    time_filter=time_filter,
+                    max_results=max_results
+                )
+                
+                if videos:
+                    st.success(f"✅ '{keyword}' 키워드로 {len(videos)}개의 동영상을 찾았습니다!")
+                    
+                    # 동영상 목록 표시
+                    for i, video in enumerate(videos):
+                        with st.container():
+                            col1, col2 = st.columns([1, 3])
+                            
+                            with col1:
+                                st.image(video['thumbnail_url'], width=120)
+                            
+                            with col2:
+                                st.markdown(f"**{video['title']}**")
+                                st.markdown(f"📺 {video['channel_title']}")
+                                
+                                # 발행일 포맷팅
+                                published_date = datetime.fromisoformat(
+                                    video['published_at'].replace('Z', '+00:00')
+                                ).strftime("%Y-%m-%d %H:%M")
+                                st.markdown(f"📅 {published_date}")
+                                
+                                # 설명 미리보기
+                                if video['description']:
+                                    desc_preview = video['description'][:100] + "..." if len(video['description']) > 100 else video['description']
+                                    st.markdown(f"📝 {desc_preview}")
+                                
+                                # 링크 버튼
+                                if st.button(f"보기 {i+1}", key=f"simple_watch_{i}"):
+                                    st.markdown(f"[YouTube에서 보기]({video['url']})")
+                                
+                                # 분석 버튼
+                                if st.button(f"분석 {i+1}", key=f"simple_analyze_{i}"):
+                                    st.session_state.selected_video_url = video['url']
+                                    st.rerun()
+                    
+                    st.markdown("---")
+                    st.markdown("💡 **팁**: 동영상을 분석하려면 '분석' 버튼을 클릭하세요.")
+                else:
+                    st.warning(f"'{keyword}' 키워드로 해당 기간에 업로드된 동영상을 찾을 수 없습니다.")
     
     # 선택된 동영상이 있으면 분석 페이지로 이동
     if hasattr(st.session_state, 'selected_video_url') and st.session_state.selected_video_url:

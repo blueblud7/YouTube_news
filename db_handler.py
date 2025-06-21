@@ -1507,4 +1507,196 @@ def get_detailed_video_analysis(video_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 # 데이터베이스 초기화 (모듈 로드 시 실행)
-initialize_db() 
+initialize_db()
+
+# Editorial 관련 함수들 추가
+def get_all_editorials() -> List[Dict[str, Any]]:
+    """
+    모든 editorial(사설) 목록을 가져옵니다.
+    
+    :return: editorial 목록
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, title, content, news_type, created_at, video_ids, style, word_count, language, keywords
+            FROM news
+            ORDER BY created_at DESC
+        """)
+        
+        editorials = []
+        for row in cursor.fetchall():
+            editorial = dict(row)
+            # video_ids가 JSON 문자열이면 파싱
+            if editorial['video_ids']:
+                try:
+                    editorial['video_ids'] = json.loads(editorial['video_ids'])
+                except:
+                    editorial['video_ids'] = []
+            else:
+                editorial['video_ids'] = []
+            
+            # keywords가 JSON 문자열이면 파싱
+            if editorial['keywords']:
+                try:
+                    editorial['keywords'] = json.loads(editorial['keywords'])
+                except:
+                    editorial['keywords'] = []
+            else:
+                editorial['keywords'] = []
+            
+            editorials.append(editorial)
+        
+        conn.close()
+        return editorials
+    
+    except Exception as e:
+        print(f"Editorial 목록 조회 중 오류 발생: {e}")
+        return []
+
+def save_editorial(title: str, content: str, news_type: str = "editorial", video_ids: List[str] = None, style: str = "basic", word_count: int = 1000, language: str = "ko", keywords: List[str] = None) -> bool:
+    """
+    Editorial을 데이터베이스에 저장합니다.
+    
+    :param title: 제목
+    :param content: 내용
+    :param news_type: 뉴스 타입 (기본값: editorial)
+    :param video_ids: 관련 비디오 ID 목록
+    :param style: 스타일
+    :param word_count: 단어 수
+    :param language: 언어
+    :param keywords: 키워드 목록
+    :return: 저장 성공 여부
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # video_ids와 keywords를 JSON 문자열로 변환
+        video_ids_json = json.dumps(video_ids) if video_ids else None
+        keywords_json = json.dumps(keywords) if keywords else None
+        
+        cursor.execute("""
+            INSERT INTO news (title, content, news_type, created_at, video_ids, style, word_count, language, keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            title, content, news_type, datetime.now().isoformat(),
+            video_ids_json, style, word_count, language, keywords_json
+        ))
+        
+        conn.commit()
+        conn.close()
+        print(f"Editorial '{title}'을 데이터베이스에 저장했습니다.")
+        return True
+    
+    except Exception as e:
+        print(f"Editorial 저장 중 오류 발생: {e}")
+        return False
+
+def get_editorials_by_date_range(start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    """
+    특정 날짜 범위의 editorial을 가져옵니다.
+    
+    :param start_date: 시작 날짜 (ISO 형식)
+    :param end_date: 종료 날짜 (ISO 형식)
+    :return: editorial 목록
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, title, content, news_type, created_at, video_ids, style, word_count, language, keywords
+            FROM news
+            WHERE created_at BETWEEN ? AND ?
+            ORDER BY created_at DESC
+        """, (start_date, end_date))
+        
+        editorials = []
+        for row in cursor.fetchall():
+            editorial = dict(row)
+            # video_ids가 JSON 문자열이면 파싱
+            if editorial['video_ids']:
+                try:
+                    editorial['video_ids'] = json.loads(editorial['video_ids'])
+                except:
+                    editorial['video_ids'] = []
+            else:
+                editorial['video_ids'] = []
+            
+            # keywords가 JSON 문자열이면 파싱
+            if editorial['keywords']:
+                try:
+                    editorial['keywords'] = json.loads(editorial['keywords'])
+                except:
+                    editorial['keywords'] = []
+            else:
+                editorial['keywords'] = []
+            
+            editorials.append(editorial)
+        
+        conn.close()
+        return editorials
+    
+    except Exception as e:
+        print(f"날짜 범위 editorial 조회 중 오류 발생: {e}")
+        return []
+
+def delete_editorial(editorial_id: int) -> bool:
+    """
+    Editorial을 삭제합니다.
+    
+    :param editorial_id: 삭제할 editorial ID
+    :return: 삭제 성공 여부
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM news WHERE id = ?", (editorial_id,))
+        
+        if cursor.rowcount > 0:
+            conn.commit()
+            conn.close()
+            print(f"Editorial ID {editorial_id}를 삭제했습니다.")
+            return True
+        else:
+            conn.close()
+            print(f"Editorial ID {editorial_id}를 찾을 수 없습니다.")
+            return False
+    
+    except Exception as e:
+        print(f"Editorial 삭제 중 오류 발생: {e}")
+        return False
+
+def is_video_processed(video_id: str) -> bool:
+    """
+    비디오가 이미 처리되었는지 확인합니다.
+    
+    :param video_id: 확인할 비디오 ID
+    :return: 처리 여부 (True: 처리됨, False: 처리되지 않음)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # videos 테이블에서 비디오 존재 여부 확인
+        cursor.execute("SELECT id FROM videos WHERE id = ?", (video_id,))
+        video_exists = cursor.fetchone() is not None
+        
+        # summaries 테이블에서 요약 존재 여부 확인
+        cursor.execute("SELECT id FROM summaries WHERE video_id = ?", (video_id,))
+        summary_exists = cursor.fetchone() is not None
+        
+        conn.close()
+        
+        # 비디오가 존재하고 요약도 있으면 처리된 것으로 간주
+        return video_exists and summary_exists
+    
+    except Exception as e:
+        print(f"비디오 처리 상태 확인 중 오류 발생: {e}")
+        return False 

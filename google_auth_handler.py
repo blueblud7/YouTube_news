@@ -63,6 +63,93 @@ class GoogleAuthHandler:
             st.error(f"YouTube API 서비스 생성 중 오류: {str(e)}")
             return False
     
+    def create_credentials_template(self):
+        """credentials.json 템플릿을 생성합니다."""
+        template = {
+            "installed": {
+                "client_id": "your-client-id.apps.googleusercontent.com",
+                "project_id": "your-project-id",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_secret": "your-client-secret",
+                "redirect_uris": ["http://localhost"]
+            }
+        }
+        
+        with open('credentials_template.json', 'w', encoding='utf-8') as f:
+            json.dump(template, f, indent=2, ensure_ascii=False)
+        
+        return 'credentials_template.json'
+    
+    def search_videos_by_keyword_simple(self, keyword, time_filter='1w', max_results=50):
+        """API 키만으로 키워드 검색 (구글 로그인 불필요)"""
+        try:
+            from googleapiclient.discovery import build
+            from config import get_youtube_api_key
+            
+            api_key = get_youtube_api_key()
+            if not api_key:
+                st.error("YouTube API 키가 설정되지 않았습니다.")
+                return []
+            
+            youtube = build('youtube', 'v3', developerKey=api_key)
+            
+            # 시간 필터 설정
+            published_after = None
+            if time_filter == '1d':
+                published_after = datetime.now() - timedelta(days=1)
+            elif time_filter == '1w':
+                published_after = datetime.now() - timedelta(weeks=1)
+            elif time_filter == '1m':
+                published_after = datetime.now() - timedelta(days=30)
+            elif time_filter == 'latest':
+                published_after = datetime.now() - timedelta(hours=6)
+            
+            published_after_str = published_after.isoformat() + 'Z' if published_after else None
+            
+            videos = []
+            next_page_token = None
+            
+            while len(videos) < max_results:
+                request = youtube.search().list(
+                    part='snippet',
+                    q=keyword,
+                    type='video',
+                    order='date',
+                    maxResults=min(50, max_results - len(videos)),
+                    pageToken=next_page_token,
+                    publishedAfter=published_after_str
+                )
+                
+                response = request.execute()
+                
+                for item in response['items']:
+                    video = {
+                        'video_id': item['id']['videoId'],
+                        'title': item['snippet']['title'],
+                        'description': item['snippet']['description'],
+                        'channel_id': item['snippet']['channelId'],
+                        'channel_title': item['snippet']['channelTitle'],
+                        'published_at': item['snippet']['publishedAt'],
+                        'thumbnail_url': item['snippet']['thumbnails']['medium']['url'],
+                        'url': f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+                    }
+                    videos.append(video)
+                
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+            
+            return videos
+            
+        except HttpError as e:
+            st.error(f"동영상 검색 중 오류: {str(e)}")
+            return []
+        except Exception as e:
+            st.error(f"동영상 검색 중 오류: {str(e)}")
+            return []
+    
     def get_subscriptions(self, max_results=50):
         """사용자의 구독 채널 목록을 가져옵니다."""
         if not self.youtube_service:
