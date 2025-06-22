@@ -36,18 +36,7 @@ class AutoOAuthSetup:
         st.markdown("### 🔐 구글 로그인 설정")
         st.markdown("아래 방법 중 하나를 선택하여 구글 계정으로 로그인하세요.")
         
-        # 세션에서 oauth_method 확인
-        oauth_method = st.session_state.get('oauth_method', 'playground')
-        
         # 방법 선택
-        if oauth_method == "direct":
-            method = "🔑 Access Token 직접 입력"
-        elif oauth_method == "advanced":
-            method = "⚙️ 고급 OAuth 설정 (권장)"
-        else:
-            method = "🌐 Google OAuth Playground (간단)"
-        
-        # 방법 선택 (세션 상태에 따라 자동 선택)
         method = st.radio(
             "로그인 방법 선택",
             [
@@ -55,15 +44,18 @@ class AutoOAuthSetup:
                 "🔑 Access Token 직접 입력",
                 "⚙️ 고급 OAuth 설정 (권장)"
             ],
-            index=0 if oauth_method == "playground" else (1 if oauth_method == "direct" else 2),
             key="oauth_method_radio"
         )
         
+        # 세션 상태 업데이트
         if method == "🌐 Google OAuth Playground (간단)":
+            st.session_state.oauth_method = "playground"
             return self._setup_oauth_playground()
         elif method == "🔑 Access Token 직접 입력":
+            st.session_state.oauth_method = "direct"
             return self._setup_access_token()
         else:
+            st.session_state.oauth_method = "advanced"
             return self._setup_advanced_oauth()
     
     def _setup_oauth_playground(self):
